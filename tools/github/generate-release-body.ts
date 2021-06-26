@@ -48,9 +48,8 @@ const main = () => {
   const previousTag = lastTags[0];
   const newTag = lastTags[1];
 
-  const runtimes = ["moonbase", "moonshadow", "moonriver", "moonbeam"].map((runtimeName) =>
-    getRuntimeInfo(runtimeName)
-  );
+  // const runtimes = ["moonbase", "moonshadow", "moonriver", "moonbeam"].map((runtimeName) =>
+  const runtimes = ["moonbase"].map((runtimeName) => getRuntimeInfo(runtimeName));
   const moduleLinks = ["substrate", "polkadot", "cumulus", "frontier"].map((repoName) => ({
     name: repoName,
     link: getCompareLink(repoName, previousTag, newTag),
