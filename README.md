@@ -1,5 +1,7 @@
 # ![Moonbeam](media/moonbeam-cover.jpg)
 
+TEST
+
 ![Tests](https://github.com/PureStake/moonbeam/workflows/Release/badge.svg)
 
 **An Ethereum compatible [Parachain](https://polkadot.network/technology/) built with [Substrate](https://substrate.dev).**
