@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":[["Summary",""],["Transaction",""],["TxPool",""],["TxPoolResult",""]],"trait":[["GetT",""],["TxPoolServer","Server trait implementation for the `TxPool` RPC API."]],"type":[["TransactionMap",""]]};

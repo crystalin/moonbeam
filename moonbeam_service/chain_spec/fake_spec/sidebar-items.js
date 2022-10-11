@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":[["FakeSpec","Fake specifications, only a workaround to compile with runtime optional features. It’s a zero variant enum to ensure at compile time that we never instantiate this type."]]};

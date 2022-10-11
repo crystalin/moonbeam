@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":[["DelegationChange","Changes requested by the delegator"]],"struct":[["DelegationRequest",""],["Delegator","Delegator state"],["PendingDelegationRequests","Pending requests to mutate delegations for each delegator"]]};

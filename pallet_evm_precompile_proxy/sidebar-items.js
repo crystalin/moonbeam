@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":[["ProxyPrecompileCall",""]],"struct":[["ProxyPrecompile","A precompile to wrap the functionality from pallet-proxy."]]};
