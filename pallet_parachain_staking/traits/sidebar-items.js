@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"trait":[["OnCollatorPayout",""],["OnNewRound",""]]};
+window.SIDEBAR_ITEMS = {"trait":["OnCollatorPayout","OnNewRound","PayoutCollatorReward"]};

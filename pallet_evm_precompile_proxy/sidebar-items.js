@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":[["ProxyPrecompileCall",""]],"struct":[["ProxyPrecompile","A precompile to wrap the functionality from pallet-proxy."]]};
+window.SIDEBAR_ITEMS = {"constant":["CALL_DATA_LIMIT"],"enum":["ProxyPrecompileCall"],"struct":["EvmSubCall","OnlyIsProxy","OnlyIsProxyAndProxy","ProxyPrecompile"],"trait":["EvmProxyCallFilter"]};
