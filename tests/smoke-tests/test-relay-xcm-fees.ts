@@ -5,13 +5,10 @@ import { expect } from "chai";
 import { describeSmokeSuite } from "../util/setup-smoke-tests";
 import { MultiLocation } from "@polkadot/types/interfaces";
 import { it } from "mocha";
+import { extractWeight } from "../util/block";
 const debug = require("debug")("smoke:treasury");
 
-const wssUrl = process.env.WSS_URL || null;
-const relayWssUrl = process.env.RELAY_WSS_URL || null;
-
-describeSmokeSuite(`Verify XCM weight fees for relay`, { wssUrl, relayWssUrl }, (context) => {
-  const conditionalIt = process.env.SKIP_RELAY_TESTS ? it.skip : it;
+describeSmokeSuite("S1800", `Verify XCM weight fees for relay`, (context, testIt) => {
   const accounts: { [account: string]: FrameSystemAccountInfo } = {};
 
   let atBlockNumber: number = 0;
@@ -20,6 +17,9 @@ describeSmokeSuite(`Verify XCM weight fees for relay`, { wssUrl, relayWssUrl }, 
   let relayApiAt: ApiDecoration<"promise"> = null;
 
   before("Setup api", async function () {
+    if (process.env.SKIP_RELAY_TESTS) {
+      this.skip();
+    }
     atBlockNumber = (await context.polkadotApi.rpc.chain.getHeader()).number.toNumber();
     apiAt = await context.polkadotApi.at(
       await context.polkadotApi.rpc.chain.getBlockHash(atBlockNumber)
@@ -31,7 +31,7 @@ describeSmokeSuite(`Verify XCM weight fees for relay`, { wssUrl, relayWssUrl }, 
     );
   });
 
-  conditionalIt("should have value over relay expected fees", async function () {
+  testIt("C100", `should have value over relay expected fees`, async function () {
     // Load data
     const relayRuntime = context.relayApi.runtimeVersion.specName.toString();
     const paraRuntime = context.polkadotApi.runtimeVersion.specName.toString();
@@ -71,16 +71,13 @@ describeSmokeSuite(`Verify XCM weight fees for relay`, { wssUrl, relayWssUrl }, 
       relayRuntime.startsWith("westend")
         ? units / 100n
         : relayRuntime.startsWith("kusama")
-        ? units / 30_000n
+        ? units / 3_000n
         : units / 100n;
     const coef = cent / 10n;
 
-    const relayBaseWeight =
-      relayVersion >= 9290
-        ? (
-            relayApiAt.consts.system.blockWeights.perClass.normal.baseExtrinsic as any
-          ).refTime.toBigInt()
-        : relayApiAt.consts.system.blockWeights.perClass.normal.baseExtrinsic.toBigInt();
+    const relayBaseWeight = extractWeight(
+      relayApiAt.consts.system.blockWeights.perClass.normal.baseExtrinsic
+    ).toBigInt();
 
     const expectedFeePerSecond = (coef * seconds) / relayBaseWeight;
 

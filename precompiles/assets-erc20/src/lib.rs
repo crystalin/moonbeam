@@ -15,13 +15,14 @@
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![cfg_attr(test, feature(assert_matches))]
 
 use core::fmt::Display;
 use fp_evm::PrecompileHandle;
-use frame_support::traits::fungibles::approvals::Inspect as ApprovalInspect;
-use frame_support::traits::fungibles::metadata::Inspect as MetadataInspect;
 use frame_support::traits::fungibles::Inspect;
+use frame_support::traits::fungibles::{
+	approvals::Inspect as ApprovalInspect, metadata::Inspect as MetadataInspect,
+	roles::Inspect as RolesInspect,
+};
 use frame_support::traits::{ConstBool, Get, OriginTrait};
 use frame_support::{
 	dispatch::{Dispatchable, GetDispatchInfo, PostDispatchInfo},
@@ -121,15 +122,16 @@ where
 		+ pallet_evm::Config
 		+ frame_system::Config
 		+ pallet_timestamp::Config,
-	Runtime::Call: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
-	Runtime::Call: From<pallet_assets::Call<Runtime, Instance>>,
-	<Runtime::Call as Dispatchable>::Origin: From<Option<Runtime::AccountId>>,
-	BalanceOf<Runtime, Instance>: TryFrom<U256> + Into<U256> + EvmData,
+	Runtime::RuntimeCall: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
+	Runtime::RuntimeCall: From<pallet_assets::Call<Runtime, Instance>>,
+	<Runtime::RuntimeCall as Dispatchable>::RuntimeOrigin: From<Option<Runtime::AccountId>>,
+	BalanceOf<Runtime, Instance>: TryFrom<U256> + Into<U256> + solidity::Codec,
 	Runtime: AccountIdAssetIdConversion<Runtime::AccountId, AssetIdOf<Runtime, Instance>>,
-	<<Runtime as frame_system::Config>::Call as Dispatchable>::Origin: OriginTrait,
+	<<Runtime as frame_system::Config>::RuntimeCall as Dispatchable>::RuntimeOrigin: OriginTrait,
 	IsLocal: Get<bool>,
 	<Runtime as pallet_timestamp::Config>::Moment: Into<U256>,
 	AssetIdOf<Runtime, Instance>: Display,
+	Runtime::AccountId: Into<H160>,
 {
 	/// PrecompileSet discrimiant. Allows to knows if the address maps to an asset id,
 	/// and if this is the case which one.
@@ -149,6 +151,7 @@ where
 	}
 
 	#[precompile::public("totalSupply()")]
+	#[precompile::view]
 	fn total_supply(
 		asset_id: AssetIdOf<Runtime, Instance>,
 		handle: &mut impl PrecompileHandle,
@@ -159,6 +162,7 @@ where
 	}
 
 	#[precompile::public("balanceOf(address)")]
+	#[precompile::view]
 	fn balance_of(
 		asset_id: AssetIdOf<Runtime, Instance>,
 		handle: &mut impl PrecompileHandle,
@@ -179,6 +183,7 @@ where
 	}
 
 	#[precompile::public("allowance(address,address)")]
+	#[precompile::view]
 	fn allowance(
 		asset_id: AssetIdOf<Runtime, Instance>,
 		handle: &mut impl PrecompileHandle,
@@ -221,7 +226,7 @@ where
 			SELECTOR_LOG_APPROVAL,
 			handle.context().caller,
 			spender,
-			EvmDataWriter::new().write(value).build(),
+			solidity::encode_event_data(value),
 		)
 		.record(handle)?;
 
@@ -253,7 +258,7 @@ where
 				handle,
 				Some(owner.clone()).into(),
 				pallet_assets::Call::<Runtime, Instance>::cancel_approval {
-					id: asset_id,
+					id: asset_id.into(),
 					delegate: Runtime::Lookup::unlookup(spender.clone()),
 				},
 			)?;
@@ -263,7 +268,7 @@ where
 			handle,
 			Some(owner).into(),
 			pallet_assets::Call::<Runtime, Instance>::approve_transfer {
-				id: asset_id,
+				id: asset_id.into(),
 				delegate: Runtime::Lookup::unlookup(spender),
 				amount,
 			},
@@ -294,7 +299,7 @@ where
 				handle,
 				Some(origin).into(),
 				pallet_assets::Call::<Runtime, Instance>::transfer {
-					id: asset_id,
+					id: asset_id.into(),
 					target: Runtime::Lookup::unlookup(to),
 					amount: value,
 				},
@@ -306,7 +311,7 @@ where
 			SELECTOR_LOG_TRANSFER,
 			handle.context().caller,
 			to,
-			EvmDataWriter::new().write(value).build(),
+			solidity::encode_event_data(value),
 		)
 		.record(handle)?;
 
@@ -340,7 +345,7 @@ where
 					handle,
 					Some(caller).into(),
 					pallet_assets::Call::<Runtime, Instance>::transfer_approved {
-						id: asset_id,
+						id: asset_id.into(),
 						owner: Runtime::Lookup::unlookup(from),
 						destination: Runtime::Lookup::unlookup(to),
 						amount: value,
@@ -352,7 +357,7 @@ where
 					handle,
 					Some(from).into(),
 					pallet_assets::Call::<Runtime, Instance>::transfer {
-						id: asset_id,
+						id: asset_id.into(),
 						target: Runtime::Lookup::unlookup(to),
 						amount: value,
 					},
@@ -365,7 +370,7 @@ where
 			SELECTOR_LOG_TRANSFER,
 			from,
 			to,
-			EvmDataWriter::new().write(value).build(),
+			solidity::encode_event_data(value),
 		)
 		.record(handle)?;
 
@@ -374,6 +379,7 @@ where
 	}
 
 	#[precompile::public("name()")]
+	#[precompile::view]
 	fn name(
 		asset_id: AssetIdOf<Runtime, Instance>,
 		handle: &mut impl PrecompileHandle,
@@ -388,6 +394,7 @@ where
 	}
 
 	#[precompile::public("symbol()")]
+	#[precompile::view]
 	fn symbol(
 		asset_id: AssetIdOf<Runtime, Instance>,
 		handle: &mut impl PrecompileHandle,
@@ -402,6 +409,7 @@ where
 	}
 
 	#[precompile::public("decimals()")]
+	#[precompile::view]
 	fn decimals(
 		asset_id: AssetIdOf<Runtime, Instance>,
 		handle: &mut impl PrecompileHandle,
@@ -411,6 +419,66 @@ where
 		Ok(pallet_assets::Pallet::<Runtime, Instance>::decimals(
 			asset_id,
 		))
+	}
+
+	#[precompile::public("owner()")]
+	#[precompile::view]
+	fn owner(
+		asset_id: AssetIdOf<Runtime, Instance>,
+		handle: &mut impl PrecompileHandle,
+	) -> EvmResult<Address> {
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+
+		let owner: H160 = pallet_assets::Pallet::<Runtime, Instance>::owner(asset_id)
+			.ok_or(revert("No owner set"))?
+			.into();
+
+		Ok(Address(owner))
+	}
+
+	#[precompile::public("issuer()")]
+	#[precompile::view]
+	fn issuer(
+		asset_id: AssetIdOf<Runtime, Instance>,
+		handle: &mut impl PrecompileHandle,
+	) -> EvmResult<Address> {
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+
+		let issuer: H160 = pallet_assets::Pallet::<Runtime, Instance>::issuer(asset_id)
+			.ok_or(revert("No issuer set"))?
+			.into();
+
+		Ok(Address(issuer))
+	}
+
+	#[precompile::public("admin()")]
+	#[precompile::view]
+	fn admin(
+		asset_id: AssetIdOf<Runtime, Instance>,
+		handle: &mut impl PrecompileHandle,
+	) -> EvmResult<Address> {
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+
+		let admin: H160 = pallet_assets::Pallet::<Runtime, Instance>::admin(asset_id)
+			.ok_or(revert("No admin set"))?
+			.into();
+
+		Ok(Address(admin))
+	}
+
+	#[precompile::public("freezer()")]
+	#[precompile::view]
+	fn freezer(
+		asset_id: AssetIdOf<Runtime, Instance>,
+		handle: &mut impl PrecompileHandle,
+	) -> EvmResult<Address> {
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+
+		let freezer: H160 = pallet_assets::Pallet::<Runtime, Instance>::freezer(asset_id)
+			.ok_or(revert("No freezer set"))?
+			.into();
+
+		Ok(Address(freezer))
 	}
 
 	// From here: only for locals, we need to check whether we are in local assets otherwise fail
@@ -440,7 +508,7 @@ where
 				handle,
 				Some(origin).into(),
 				pallet_assets::Call::<Runtime, Instance>::mint {
-					id: asset_id,
+					id: asset_id.into(),
 					beneficiary: Runtime::Lookup::unlookup(to),
 					amount: value,
 				},
@@ -452,7 +520,7 @@ where
 			SELECTOR_LOG_TRANSFER,
 			H160::default(),
 			to,
-			EvmDataWriter::new().write(value).build(),
+			solidity::encode_event_data(value),
 		)
 		.record(handle)?;
 
@@ -485,7 +553,7 @@ where
 				handle,
 				Some(origin).into(),
 				pallet_assets::Call::<Runtime, Instance>::burn {
-					id: asset_id,
+					id: asset_id.into(),
 					who: Runtime::Lookup::unlookup(from),
 					amount: value,
 				},
@@ -497,7 +565,7 @@ where
 			SELECTOR_LOG_TRANSFER,
 			from,
 			H160::default(),
-			EvmDataWriter::new().write(value).build(),
+			solidity::encode_event_data(value),
 		)
 		.record(handle)?;
 
@@ -526,7 +594,7 @@ where
 				handle,
 				Some(origin).into(),
 				pallet_assets::Call::<Runtime, Instance>::freeze {
-					id: asset_id,
+					id: asset_id.into(),
 					who: Runtime::Lookup::unlookup(account),
 				},
 			)?;
@@ -557,7 +625,7 @@ where
 				handle,
 				Some(origin).into(),
 				pallet_assets::Call::<Runtime, Instance>::thaw {
-					id: asset_id,
+					id: asset_id.into(),
 					who: Runtime::Lookup::unlookup(account),
 				},
 			)?;
@@ -584,7 +652,9 @@ where
 			RuntimeHelper::<Runtime>::try_dispatch(
 				handle,
 				Some(origin).into(),
-				pallet_assets::Call::<Runtime, Instance>::freeze_asset { id: asset_id },
+				pallet_assets::Call::<Runtime, Instance>::freeze_asset {
+					id: asset_id.into(),
+				},
 			)?;
 		}
 
@@ -609,7 +679,9 @@ where
 			RuntimeHelper::<Runtime>::try_dispatch(
 				handle,
 				Some(origin).into(),
-				pallet_assets::Call::<Runtime, Instance>::thaw_asset { id: asset_id },
+				pallet_assets::Call::<Runtime, Instance>::thaw_asset {
+					id: asset_id.into(),
+				},
 			)?;
 		}
 
@@ -640,7 +712,7 @@ where
 				handle,
 				Some(origin).into(),
 				pallet_assets::Call::<Runtime, Instance>::transfer_ownership {
-					id: asset_id,
+					id: asset_id.into(),
 					owner: Runtime::Lookup::unlookup(owner),
 				},
 			)?;
@@ -678,7 +750,7 @@ where
 				handle,
 				Some(origin).into(),
 				pallet_assets::Call::<Runtime, Instance>::set_team {
-					id: asset_id,
+					id: asset_id.into(),
 					issuer: Runtime::Lookup::unlookup(issuer),
 					admin: Runtime::Lookup::unlookup(admin),
 					freezer: Runtime::Lookup::unlookup(freezer),
@@ -711,7 +783,7 @@ where
 				handle,
 				Some(origin).into(),
 				pallet_assets::Call::<Runtime, Instance>::set_metadata {
-					id: asset_id,
+					id: asset_id.into(),
 					name: name.into(),
 					symbol: symbol.into(),
 					decimals,
@@ -740,7 +812,9 @@ where
 			RuntimeHelper::<Runtime>::try_dispatch(
 				handle,
 				Some(origin).into(),
-				pallet_assets::Call::<Runtime, Instance>::clear_metadata { id: asset_id },
+				pallet_assets::Call::<Runtime, Instance>::clear_metadata {
+					id: asset_id.into(),
+				},
 			)?;
 		}
 

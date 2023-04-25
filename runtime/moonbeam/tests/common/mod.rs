@@ -27,10 +27,10 @@ pub use moonbeam_runtime::{
 	asset_config::AssetRegistrarMetadata,
 	currency::{GIGAWEI, GLMR, SUPPLY_FACTOR, WEI},
 	xcm_config::AssetType,
-	AccountId, AssetId, AssetManager, Assets, AuthorInherent, Balance, Balances, Call,
-	CrowdloanRewards, Ethereum, Event, Executive, FixedGasPrice, InflationInfo, LocalAssets,
-	ParachainStaking, Range, Runtime, System, TransactionConverter, UncheckedExtrinsic, HOURS,
-	WEEKS,
+	AccountId, AssetId, AssetManager, Assets, AuthorInherent, Balance, Balances, CrowdloanRewards,
+	Ethereum, Executive, Header, InflationInfo, LocalAssets, ParachainStaking, Range, Runtime,
+	RuntimeCall, RuntimeEvent, System, TransactionConverter, TransactionPaymentAsGasPrice,
+	UncheckedExtrinsic, HOURS, WEEKS,
 };
 use nimbus_primitives::{NimbusId, NIMBUS_ENGINE_ID};
 use sp_core::{Encode, H160};
@@ -42,9 +42,9 @@ use fp_rpc::ConvertTransaction;
 
 // A valid signed Alice transfer.
 pub const VALID_ETH_TX: &str =
-	"f8648085174876e8008252089412cb274aad8251c875c0bf6872b67d9983e53fdd01801ba05deb036\
-	17e9c2d82e0f4e897ef8fbb01c91244abfc4bd9c3206bc87f9fc71a01a0719f146637fe2b462ccae80\
-	e462ecefa560635d933257ec117a1f7701b178c93";
+	"02f869820501808085e8d4a51000825208943cd0a705a2dc65e5b1e1205896baa2be8a07c6e00180c\
+	001a061087911e877a5802142a89a40d231d50913db399eb50839bb2d04e612b22ec8a01aa313efdf2\
+	793bea76da6813bda611444af16a6207a8cfef2d9c8aa8f8012f7";
 
 // An invalid signed Alice transfer with a gas limit artifically set to 0.
 pub const INVALID_ETH_TX: &str =
@@ -97,7 +97,7 @@ pub fn run_to_block(n: u32, author: Option<NimbusId>) {
 	}
 }
 
-pub fn last_event() -> Event {
+pub fn last_event() -> RuntimeEvent {
 	System::events().pop().expect("Event expected").event
 }
 
@@ -129,10 +129,10 @@ pub struct ExtBuilder {
 	// [collator, amount]
 	collators: Vec<(AccountId, Balance)>,
 	// [delegator, collator, nomination_amount]
-	delegations: Vec<(AccountId, AccountId, Balance)>,
+	delegations: Vec<(AccountId, AccountId, Balance, Percent)>,
 	// per-round inflation config
 	inflation: InflationInfo<Balance>,
-	// AuthorId -> AccoutId mappings
+	// AuthorId -> AccountId mappings
 	mappings: Vec<(NimbusId, AccountId)>,
 	// Crowdloan fund
 	crowdloan_fund: Balance,
@@ -198,7 +198,10 @@ impl ExtBuilder {
 	}
 
 	pub fn with_delegations(mut self, delegations: Vec<(AccountId, AccountId, Balance)>) -> Self {
-		self.delegations = delegations;
+		self.delegations = delegations
+			.into_iter()
+			.map(|d| (d.0, d.1, d.2, Percent::zero()))
+			.collect();
 		self
 	}
 
@@ -254,6 +257,7 @@ impl ExtBuilder {
 			collator_commission: Perbill::from_percent(20),
 			parachain_bond_reserve_percent: Percent::from_percent(30),
 			blocks_per_round: 6 * HOURS,
+			num_selected_candidates: 8,
 		}
 		.assimilate_storage(&mut t)
 		.unwrap();
@@ -300,21 +304,16 @@ impl ExtBuilder {
 		)
 		.unwrap();
 
-		<pallet_base_fee::GenesisConfig<Runtime> as GenesisBuild<Runtime>>::assimilate_storage(
-			&pallet_base_fee::GenesisConfig::<Runtime>::default(),
-			&mut t,
-		)
-		.unwrap();
-
 		let mut ext = sp_io::TestExternalities::new(t);
 		let local_assets = self.local_assets.clone();
 		let xcm_assets = self.xcm_assets.clone();
 		ext.execute_with(|| {
 			// If any local assets specified, we create them here
 			for (asset_id, balances, owner) in local_assets.clone() {
-				LocalAssets::force_create(root_origin(), asset_id, owner, true, 1).unwrap();
+				LocalAssets::force_create(root_origin(), asset_id.into(), owner, true, 1).unwrap();
 				for (account, balance) in balances {
-					LocalAssets::mint(origin_of(owner.into()), asset_id, account, balance).unwrap();
+					LocalAssets::mint(origin_of(owner.into()), asset_id.into(), account, balance)
+						.unwrap();
 				}
 			}
 			// If any xcm assets specified, we register them here
@@ -331,7 +330,7 @@ impl ExtBuilder {
 				for (account, balance) in xcm_asset_initialization.balances {
 					Assets::mint(
 						origin_of(AssetManager::account_id()),
-						asset_id,
+						asset_id.into(),
 						account,
 						balance,
 					)
@@ -352,16 +351,16 @@ pub const CHARLIE: [u8; 20] = [6u8; 20];
 pub const DAVE: [u8; 20] = [7u8; 20];
 pub const EVM_CONTRACT: [u8; 20] = [8u8; 20];
 
-pub fn origin_of(account_id: AccountId) -> <Runtime as frame_system::Config>::Origin {
-	<Runtime as frame_system::Config>::Origin::signed(account_id)
+pub fn origin_of(account_id: AccountId) -> <Runtime as frame_system::Config>::RuntimeOrigin {
+	<Runtime as frame_system::Config>::RuntimeOrigin::signed(account_id)
 }
 
-pub fn inherent_origin() -> <Runtime as frame_system::Config>::Origin {
-	<Runtime as frame_system::Config>::Origin::none()
+pub fn inherent_origin() -> <Runtime as frame_system::Config>::RuntimeOrigin {
+	<Runtime as frame_system::Config>::RuntimeOrigin::none()
 }
 
-pub fn root_origin() -> <Runtime as frame_system::Config>::Origin {
-	<Runtime as frame_system::Config>::Origin::root()
+pub fn root_origin() -> <Runtime as frame_system::Config>::RuntimeOrigin {
+	<Runtime as frame_system::Config>::RuntimeOrigin::root()
 }
 
 /// Mock the inherent that sets validation data in ParachainSystem, which
@@ -383,7 +382,7 @@ pub fn set_parachain_inherent_data() {
 		downward_messages: Default::default(),
 		horizontal_messages: Default::default(),
 	};
-	assert_ok!(Call::ParachainSystem(
+	assert_ok!(RuntimeCall::ParachainSystem(
 		cumulus_pallet_parachain_system::Call::<Runtime>::set_validation_data {
 			data: parachain_inherent_data
 		}
@@ -398,7 +397,7 @@ pub fn unchecked_eth_tx(raw_hex_tx: &str) -> UncheckedExtrinsic {
 
 pub fn ethereum_transaction(raw_hex_tx: &str) -> pallet_ethereum::Transaction {
 	let bytes = hex::decode(raw_hex_tx).expect("Transaction bytes.");
-	let transaction = rlp::decode::<pallet_ethereum::Transaction>(&bytes[..]);
+	let transaction = ethereum::EnvelopedDecodable::decode(&bytes[..]);
 	assert!(transaction.is_ok());
 	transaction.unwrap()
 }

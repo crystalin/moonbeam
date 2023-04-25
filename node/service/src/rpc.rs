@@ -24,17 +24,17 @@ use fp_rpc::EthereumRuntimeRPCApi;
 use sp_block_builder::BlockBuilder;
 
 use crate::client::RuntimeApiCollection;
-use cli_opt::EthApi as EthApiCmd;
 use cumulus_primitives_core::ParaId;
 use fc_mapping_sync::{MappingSyncWorker, SyncStrategy};
 use fc_rpc::{
 	EthBlockDataCacheTask, EthTask, OverrideHandle, RuntimeApiStorageOverride, SchemaV1Override,
 	SchemaV2Override, SchemaV3Override, StorageOverride,
 };
-use fc_rpc_core::types::{FeeHistoryCache, FilterPool};
+use fc_rpc_core::types::{CallRequest, FeeHistoryCache, FilterPool};
 use fp_storage::EthereumStorageSchema;
 use futures::StreamExt;
 use jsonrpsee::RpcModule;
+use moonbeam_cli_opt::EthApi as EthApiCmd;
 use moonbeam_core_primitives::{Block, Hash};
 use sc_client_api::{
 	backend::{AuxStore, Backend, StateBackend, StorageProvider},
@@ -48,13 +48,47 @@ use sc_rpc_api::DenyUnsafe;
 use sc_service::TaskManager;
 use sc_transaction_pool::{ChainApi, Pool};
 use sc_transaction_pool_api::TransactionPool;
-use sp_api::{HeaderT, ProvideRuntimeApi};
+use sp_api::{CallApiAt, HeaderT, ProvideRuntimeApi};
 use sp_blockchain::{
 	Backend as BlockchainBackend, Error as BlockChainError, HeaderBackend, HeaderMetadata,
 };
 use sp_core::H256;
 use sp_runtime::traits::{BlakeTwo256, Block as BlockT};
 use std::collections::BTreeMap;
+
+pub struct MoonbeamEGA;
+
+impl fc_rpc::EstimateGasAdapter for MoonbeamEGA {
+	fn adapt_request(mut request: CallRequest) -> CallRequest {
+		// Redirect any call to batch precompile:
+		// force usage of batchAll method for estimation
+		use sp_core::H160;
+		const BATCH_PRECOMPILE_ADDRESS: H160 = H160(hex_literal::hex!(
+			"0000000000000000000000000000000000000808"
+		));
+		const BATCH_PRECOMPILE_BATCH_ALL_SELECTOR: [u8; 4] = hex_literal::hex!("96e292b8");
+		if request.to == Some(BATCH_PRECOMPILE_ADDRESS) {
+			if let Some(ref mut data) = request.data {
+				if data.0.len() >= 4 {
+					data.0[..4].copy_from_slice(&BATCH_PRECOMPILE_BATCH_ALL_SELECTOR);
+				}
+			}
+		}
+		request
+	}
+}
+
+pub struct MoonbeamEthConfig<C, BE>(std::marker::PhantomData<(C, BE)>);
+
+impl<C, BE> fc_rpc::EthConfig<Block, C> for MoonbeamEthConfig<C, BE>
+where
+	C: sc_client_api::StorageProvider<Block, BE> + Sync + Send + 'static,
+	BE: Backend<Block> + 'static,
+{
+	type EstimateGasAdapter = MoonbeamEGA;
+	type RuntimeStorageOverride =
+		fc_rpc::frontier_backend_client::SystemAccountId20StorageOverride<Block, C, BE>;
+}
 
 /// Full client dependencies.
 pub struct FullDeps<C, P, A: ChainApi, BE> {
@@ -99,30 +133,26 @@ pub struct TracingConfig {
 	pub trace_filter_max_count: u32,
 }
 
-pub fn overrides_handle<C, BE>(client: Arc<C>) -> Arc<OverrideHandle<Block>>
+pub fn overrides_handle<B, C, BE>(client: Arc<C>) -> Arc<OverrideHandle<B>>
 where
-	C: ProvideRuntimeApi<Block> + StorageProvider<Block, BE> + AuxStore,
-	C: HeaderBackend<Block> + HeaderMetadata<Block, Error = BlockChainError>,
-	C: Send + Sync + 'static,
-	C::Api: fp_rpc::EthereumRuntimeRPCApi<Block>,
-	BE: Backend<Block> + 'static,
-	BE::State: StateBackend<BlakeTwo256>,
+	B: BlockT,
+	C: ProvideRuntimeApi<B>,
+	C::Api: EthereumRuntimeRPCApi<B>,
+	C: HeaderBackend<B> + StorageProvider<B, BE> + 'static,
+	BE: Backend<B> + 'static,
 {
 	let mut overrides_map = BTreeMap::new();
 	overrides_map.insert(
 		EthereumStorageSchema::V1,
-		Box::new(SchemaV1Override::new(client.clone()))
-			as Box<dyn StorageOverride<_> + Send + Sync>,
+		Box::new(SchemaV1Override::new(client.clone())) as Box<dyn StorageOverride<_>>,
 	);
 	overrides_map.insert(
 		EthereumStorageSchema::V2,
-		Box::new(SchemaV2Override::new(client.clone()))
-			as Box<dyn StorageOverride<_> + Send + Sync>,
+		Box::new(SchemaV2Override::new(client.clone())) as Box<dyn StorageOverride<_>>,
 	);
 	overrides_map.insert(
 		EthereumStorageSchema::V3,
-		Box::new(SchemaV3Override::new(client.clone()))
-			as Box<dyn StorageOverride<_> + Send + Sync>,
+		Box::new(SchemaV3Override::new(client.clone())) as Box<dyn StorageOverride<_>>,
 	);
 
 	Arc::new(OverrideHandle {
@@ -144,6 +174,7 @@ where
 	C: ProvideRuntimeApi<Block> + StorageProvider<Block, BE> + AuxStore,
 	C: BlockchainEvents<Block>,
 	C: HeaderBackend<Block> + HeaderMetadata<Block, Error = BlockChainError> + 'static,
+	C: CallApiAt<Block>,
 	C: Send + Sync + 'static,
 	A: ChainApi<Block = Block> + 'static,
 	C::Api: RuntimeApiCollection<StateBackend = BE::State>,
@@ -213,7 +244,9 @@ where
 			Arc::clone(&block_data_cache),
 			fee_history_cache,
 			fee_history_limit,
+			10,
 		)
+		.replace_config::<MoonbeamEthConfig<C, BE>>()
 		.into_rpc(),
 	)?;
 

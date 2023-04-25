@@ -24,6 +24,9 @@ pub use asset_id_conversions::*;
 mod barriers;
 pub use barriers::*;
 
+mod constants;
+pub use constants::*;
+
 mod fee_handlers;
 pub use fee_handlers::*;
 
@@ -38,3 +41,11 @@ pub use transactor_traits::*;
 
 mod ethereum_xcm;
 pub use ethereum_xcm::*;
+
+mod filter_asset_max_fee;
+pub use filter_asset_max_fee::*;
+
+mod xcm_execution_traits;
+pub use xcm_execution_traits::*;
+
+pub type XcmV2Weight = xcm::v2::Weight;

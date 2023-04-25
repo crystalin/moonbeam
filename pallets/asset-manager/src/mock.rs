@@ -55,8 +55,8 @@ impl frame_system::Config for Test {
 	type BaseCallFilter = Everything;
 	type BlockWeights = ();
 	type BlockLength = ();
-	type Origin = Origin;
-	type Call = Call;
+	type RuntimeOrigin = RuntimeOrigin;
+	type RuntimeCall = RuntimeCall;
 	type Index = u64;
 	type BlockNumber = BlockNumber;
 	type Hash = H256;
@@ -64,7 +64,7 @@ impl frame_system::Config for Test {
 	type AccountId = AccountId;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = sp_runtime::generic::Header<BlockNumber, BlakeTwo256>;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type BlockHashCount = BlockHashCount;
 	type DbWeight = ();
 	type Version = ();
@@ -85,7 +85,7 @@ parameter_types! {
 impl pallet_balances::Config for Test {
 	type Balance = Balance;
 	type DustRemoval = ();
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type ExistentialDeposit = ExistentialDeposit;
 	type AccountStore = System;
 	type WeightInfo = ();
@@ -110,8 +110,8 @@ parameter_types! {
 pub type AssetId = u32;
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Encode, Decode, RuntimeDebug, TypeInfo)]
 pub enum MockAssetType {
-	MockAsset(AssetId),
 	Xcm(MultiLocation),
+	MockAsset(AssetId),
 }
 
 impl Default for MockAssetType {
@@ -171,16 +171,16 @@ impl AssetRegistrar<Test> for MockAssetPalletRegistrar {
 		Ok(())
 	}
 
-	fn destroy_foreign_asset(_asset: u32, _witness: u32) -> Result<(), DispatchError> {
+	fn destroy_foreign_asset(_asset: u32) -> Result<(), DispatchError> {
 		Ok(())
 	}
 
-	fn destroy_local_asset(_asset: u32, _witness: u32) -> Result<(), DispatchError> {
+	fn destroy_local_asset(_asset: u32) -> Result<(), DispatchError> {
 		Ok(())
 	}
 
-	fn destroy_asset_dispatch_info_weight(_asset: u32, _witness: u32) -> Weight {
-		0
+	fn destroy_asset_dispatch_info_weight(_asset: u32) -> Weight {
+		Weight::from_ref_time(0)
 	}
 }
 
@@ -201,7 +201,7 @@ parameter_types! {
 }
 
 impl Config for Test {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type Balance = u64;
 	type AssetId = u32;
 	type AssetRegistrarMetadata = u32;
@@ -210,7 +210,6 @@ impl Config for Test {
 	type ForeignAssetModifierOrigin = EnsureRoot<u64>;
 	type LocalAssetModifierOrigin = EnsureRoot<u64>;
 	type LocalAssetIdCreator = MockLocalAssetIdCreator;
-	type AssetDestroyWitness = u32;
 	type Currency = Balances;
 	type LocalAssetDeposit = LocalAssetDeposit;
 	type WeightInfo = ();
@@ -253,7 +252,7 @@ pub(crate) fn events() -> Vec<super::Event<Test>> {
 		.into_iter()
 		.map(|r| r.event)
 		.filter_map(|e| {
-			if let Event::AssetManager(inner) = e {
+			if let RuntimeEvent::AssetManager(inner) = e {
 				Some(inner)
 			} else {
 				None

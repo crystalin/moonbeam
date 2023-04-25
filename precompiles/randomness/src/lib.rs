@@ -17,39 +17,58 @@
 //! Precompile to interact with randomness through an evm precompile.
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![feature(assert_matches)]
 
 extern crate alloc;
 
-use fp_evm::{Context, ExitReason, Log, PrecompileHandle};
+use fp_evm::{Context, ExitReason, FeeCalculator, Log, PrecompileHandle};
 use frame_support::traits::Get;
 use pallet_evm::GasWeightMapping;
 use pallet_randomness::{
 	weights::{SubstrateWeight, WeightInfo},
 	BalanceOf, GetBabeData, Pallet, Request, RequestInfo, RequestState, RequestType,
 };
-use precompile_utils::{costs::call_cost, prelude::*};
+use precompile_utils::{evm::costs::call_cost, prelude::*};
 use sp_core::{H160, H256, U256};
 use sp_std::{marker::PhantomData, vec, vec::Vec};
 
-// #[cfg(test)]
-// mod mock;
+#[cfg(test)]
+mod mock;
 mod solidity_types;
 #[cfg(test)]
 mod tests;
 use solidity_types::*;
 
 // Tests to verify equal to weight_to_gas(weight) in runtime integration tests
-pub const REQUEST_RANDOMNESS_ESTIMATED_COST: u64 = 26325;
-pub const INCREASE_REQUEST_FEE_ESTIMATED_COST: u64 = 16718;
-pub const EXECUTE_EXPIRATION_ESTIMATED_COST: u64 = 21989;
+pub const REQUEST_RANDOMNESS_ESTIMATED_COST: u64 = 26561;
+pub const INCREASE_REQUEST_FEE_ESTIMATED_COST: u64 = 16999;
+pub const EXECUTE_EXPIRATION_ESTIMATED_COST: u64 = 22300;
 
 /// Fulfillment overhead cost, which takes input weight hint -> weight -> return gas
-pub fn fulfillment_overhead_gas_cost<T: pallet_evm::Config>(num_words: u8) -> u64 {
+pub fn prepare_and_finish_fulfillment_gas_cost<T: pallet_evm::Config>(num_words: u8) -> u64 {
 	<T as pallet_evm::Config>::GasWeightMapping::weight_to_gas(
 		SubstrateWeight::<T>::prepare_fulfillment(num_words.into())
 			.saturating_add(SubstrateWeight::<T>::finish_fulfillment()),
 	)
+}
+
+pub fn subcall_overhead_gas_costs<T: pallet_evm::Config>() -> EvmResult<u64> {
+	// cost of log don't depend on specific address.
+	let log_cost = log_fulfillment_failed(H160::zero())
+		.compute_cost()
+		.map_err(|_| revert("failed to compute log cost"))?;
+	let call_cost = call_cost(U256::zero(), <T as pallet_evm::Config>::config());
+	log_cost
+		.checked_add(call_cost)
+		.ok_or(revert("overflow when computing overhead gas"))
+}
+
+pub fn transaction_gas_refund<T: pallet_evm::Config>() -> u64 {
+	// 21_000 for the transaction itself
+	// we also include the fees to pay for input request id which is 32 bytes, which is in practice
+	// a u64 and thus can only occupy 8 non zero bytes.
+	21_000
+		+ 8 * T::config().gas_transaction_non_zero_data
+		+ 24 * T::config().gas_transaction_zero_data
 }
 
 pub const LOG_FULFILLMENT_SUCCEEDED: [u8; 32] = keccak256!("FulFillmentSucceeded()");
@@ -65,38 +84,44 @@ pub fn log_fulfillment_failed(address: impl Into<H160>) -> Log {
 
 /// Reverts if fees and gas_limit are not sufficient to make subcall and cleanup
 fn ensure_can_provide_randomness<Runtime>(
-	code_address: H160,
-	gas_limit: u64,
+	remaining_gas: u64,
+	request_gas_limit: u64,
 	request_fee: BalanceOf<Runtime>,
-	clean_up_cost: u64,
+	subcall_overhead_gas_costs: u64,
+	prepare_and_finish_fulfillment_gas_cost: u64,
 ) -> EvmResult<()>
 where
-	Runtime: pallet_randomness::Config + pallet_evm::Config + pallet_base_fee::Config,
+	Runtime: pallet_randomness::Config + pallet_evm::Config,
 	BalanceOf<Runtime>: Into<U256>,
 {
-	// assert fee > gasLimit * base_fee
-	let gas_limit_as_u256: U256 = gas_limit.into();
-	if let Some(gas_limit_times_base_fee) =
-		gas_limit_as_u256.checked_mul(pallet_base_fee::Pallet::<Runtime>::base_fee_per_gas())
-	{
-		if gas_limit_times_base_fee >= request_fee.into() {
-			return Err(revert(
-				"Gas limit at current price must be less than fees allotted",
-			));
-		}
-	} else {
-		return Err(revert("Gas limit times base fee overflowed U256"));
+	let request_gas_limit_with_overhead = request_gas_limit
+		.checked_add(subcall_overhead_gas_costs)
+		.ok_or(revert(
+			"overflow when computing request gas limit + overhead",
+		))?;
+
+	// Ensure precompile have enough gas to perform subcall with the overhead.
+	if remaining_gas < request_gas_limit_with_overhead {
+		return Err(revert("not enough gas to perform the call"));
 	}
-	let log_cost = log_fulfillment_failed(code_address)
-		.compute_cost()
-		.map_err(|_| revert("failed to compute log cost"))?;
-	// Cost of the call itself that the batch precompile must pay.
-	let call_cost = call_cost(U256::zero(), <Runtime as pallet_evm::Config>::config());
-	// assert gasLimit > overhead cost
-	let overhead = call_cost + log_cost + clean_up_cost;
-	if gas_limit <= overhead {
-		return Err(revert("Gas limit must exceed overhead call cost"));
+
+	// Ensure request fee is enough to refund the fulfiller.
+	let total_refunded_gas = prepare_and_finish_fulfillment_gas_cost
+		.checked_add(request_gas_limit_with_overhead)
+		.ok_or(revert("overflow when computed max amount of refunded gas"))?
+		.checked_add(transaction_gas_refund::<Runtime>())
+		.ok_or(revert("overflow when computed max amount of refunded gas"))?;
+
+	let total_refunded_gas: U256 = total_refunded_gas.into();
+	let (base_fee, _) = <Runtime as pallet_evm::Config>::FeeCalculator::min_gas_price();
+	let execution_max_fee = total_refunded_gas.checked_mul(base_fee).ok_or(revert(
+		"gas limit (with overhead) * base fee overflowed U256",
+	))?;
+
+	if execution_max_fee > request_fee.into() {
+		return Err(revert("request fee cannot pay for execution cost"));
 	}
+
 	Ok(())
 }
 
@@ -113,10 +138,7 @@ fn provide_randomness(
 		contract,
 		None,
 		// callback function selector: keccak256("rawFulfillRandomWords(uint256,uint256[])")
-		EvmDataWriter::new_with_selector(0x1fe543e3_u32)
-			.write(request_id)
-			.write(randomness)
-			.build(),
+		solidity::encode_with_selector(0x1fe543e3_u32, (request_id, randomness)),
 		Some(gas_limit),
 		false,
 		&Context {
@@ -149,7 +171,7 @@ pub struct RandomnessPrecompile<Runtime>(PhantomData<Runtime>);
 #[precompile_utils::precompile]
 impl<Runtime> RandomnessPrecompile<Runtime>
 where
-	Runtime: pallet_randomness::Config + pallet_evm::Config + pallet_base_fee::Config,
+	Runtime: pallet_randomness::Config + pallet_evm::Config,
 	<Runtime as frame_system::Config>::BlockNumber: TryInto<u32> + TryFrom<u32>,
 	BalanceOf<Runtime>: TryFrom<U256> + Into<U256>,
 {
@@ -174,7 +196,7 @@ where
 	#[precompile::view]
 	fn get_request_status(
 		handle: &mut impl PrecompileHandle,
-		request_id: SolidityConvert<U256, u64>,
+		request_id: Convert<U256, u64>,
 	) -> EvmResult<RequestStatus> {
 		// record cost of 2 DB reads
 		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost() * 2)?;
@@ -200,7 +222,7 @@ where
 	#[precompile::view]
 	fn get_request(
 		handle: &mut impl PrecompileHandle,
-		request_id: SolidityConvert<U256, u64>,
+		request_id: Convert<U256, u64>,
 	) -> EvmResult<(
 		U256,    // id
 		Address, // refund address
@@ -336,7 +358,7 @@ where
 		gas_limit: u64,
 		salt: H256,
 		num_words: u8,
-		delay: SolidityConvert<u64, u32>,
+		delay: Convert<u64, u32>,
 	) -> EvmResult<U256> {
 		handle.record_cost(
 			REQUEST_RANDOMNESS_ESTIMATED_COST + RuntimeHelper::<Runtime>::db_read_gas_cost(),
@@ -381,9 +403,23 @@ where
 	#[precompile::public("fulfillRequest(uint256)")]
 	fn fulfill_request(
 		handle: &mut impl PrecompileHandle,
-		request_id: SolidityConvert<U256, u64>,
+		request_id: Convert<U256, u64>,
 	) -> EvmResult {
 		let request_id = request_id.converted();
+
+		// Since we cannot compute `prepare_and_finish_fulfillment_cost` now (we don't
+		// know the number of words), we compute the cost for the maximum allowed number of
+		// words.
+		let max_prepare_and_finish_fulfillment_cost =
+			prepare_and_finish_fulfillment_gas_cost::<Runtime>(
+				<Runtime as pallet_randomness::Config>::MaxRandomWords::get(),
+			);
+
+		if handle.remaining_gas() < max_prepare_and_finish_fulfillment_cost {
+			return Err(revert(alloc::format!(
+				"provided gas must be at least {max_prepare_and_finish_fulfillment_cost}"
+			)));
+		}
 
 		let pallet_randomness::FulfillArgs {
 			request,
@@ -392,16 +428,25 @@ where
 		} = Pallet::<Runtime>::prepare_fulfillment(request_id)
 			.map_err(|e| revert(alloc::format!("{:?}", e)))?;
 
+		let prepare_and_finish_fulfillment_cost =
+			prepare_and_finish_fulfillment_gas_cost::<Runtime>(request.num_words);
+		handle.record_cost(prepare_and_finish_fulfillment_cost)?;
+
+		let subcall_overhead_gas_costs = subcall_overhead_gas_costs::<Runtime>()?;
+
 		// check that randomness can be provided
 		ensure_can_provide_randomness::<Runtime>(
-			handle.code_address(),
+			handle.remaining_gas(),
 			request.gas_limit,
 			request.fee,
-			fulfillment_overhead_gas_cost::<Runtime>(request.num_words),
+			subcall_overhead_gas_costs,
+			prepare_and_finish_fulfillment_cost,
 		)?;
 
-		// get gas before subcall
-		let before_remaining_gas = handle.remaining_gas();
+		// We meter this section to know how much gas was actually used.
+		// It contains the gas used by the subcall and the overhead actually
+		// performing a call. It doesn't contain `prepare_and_finish_fulfillment_cost`.
+		let remaining_gas_before = handle.remaining_gas();
 		provide_randomness(
 			handle,
 			request_id,
@@ -409,16 +454,21 @@ where
 			request.contract_address.clone().into(),
 			randomness.into_iter().map(|x| H256(x)).collect(),
 		)?;
+		let remaining_gas_after = handle.remaining_gas();
 
-		// get gas after subcall
-		let after_remaining_gas = handle.remaining_gas();
-		let gas_used: U256 = before_remaining_gas
-			.checked_sub(after_remaining_gas)
+		// We compute the actual gas used to refund the caller.
+		// It is the metered gas + `prepare_and_finish_fulfillment_cost`.
+		let gas_used: U256 = remaining_gas_before
+			.checked_sub(remaining_gas_after)
 			.ok_or(revert("Before remaining gas < After remaining gas"))?
+			.checked_add(prepare_and_finish_fulfillment_cost)
+			.ok_or(revert("overflow when adding real call cost + overhead"))?
+			.checked_add(transaction_gas_refund::<Runtime>())
+			.ok_or(revert("overflow when adding real call cost + overhead"))?
 			.into();
-		// cost of execution is before_remaining_gas less after_remaining_gas
+		let (base_fee, _) = <Runtime as pallet_evm::Config>::FeeCalculator::min_gas_price();
 		let cost_of_execution: BalanceOf<Runtime> = gas_used
-			.checked_mul(pallet_base_fee::Pallet::<Runtime>::base_fee_per_gas())
+			.checked_mul(base_fee)
 			.ok_or(revert("Multiply gas used by base fee overflowed"))?
 			.try_into()
 			.map_err(|_| revert("amount is too large for provided balance type"))?;
@@ -442,7 +492,7 @@ where
 	#[precompile::public("increaseRequestFee(uint256,uint256)")]
 	fn increase_request_fee(
 		handle: &mut impl PrecompileHandle,
-		request_id: SolidityConvert<U256, u64>,
+		request_id: Convert<U256, u64>,
 		fee_increase: U256,
 	) -> EvmResult {
 		handle.record_cost(INCREASE_REQUEST_FEE_ESTIMATED_COST)?;
@@ -463,7 +513,7 @@ where
 	#[precompile::public("purgeExpiredRequest(uint256)")]
 	fn purge_expired_request(
 		handle: &mut impl PrecompileHandle,
-		request_id: SolidityConvert<U256, u64>,
+		request_id: Convert<U256, u64>,
 	) -> EvmResult {
 		handle.record_cost(EXECUTE_EXPIRATION_ESTIMATED_COST)?;
 

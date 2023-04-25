@@ -1,5 +1,5 @@
-import "@moonbeam-network/api-augment";
-
+import "@moonbeam-network/api-augment/moonbase";
+import type { RuntimeDispatchInfoV1 } from "@polkadot/types/interfaces/payment";
 import { ApiPromise } from "@polkadot/api";
 import {
   BlockHash,
@@ -8,14 +8,18 @@ import {
   Extrinsic,
   RuntimeDispatchInfo,
 } from "@polkadot/types/interfaces";
-import { FrameSystemEventRecord } from "@polkadot/types/lookup";
+import { FrameSystemEventRecord, SpWeightsWeightV2Weight } from "@polkadot/types/lookup";
+import { u32, u64, u128, Option } from "@polkadot/types";
+
 import { expect } from "chai";
 
 import { WEIGHT_PER_GAS } from "./constants";
 import { DevTestContext } from "./setup-dev-tests";
 
-import type { Block } from "@polkadot/types/interfaces/runtime/types";
+import type { Block, AccountId20 } from "@polkadot/types/interfaces/runtime/types";
 import type { TxWithEvent } from "@polkadot/api-derive/types";
+import type { ITuple } from "@polkadot/types-codec/types";
+import Bottleneck from "bottleneck";
 const debug = require("debug")("test:blocks");
 export async function createAndFinalizeBlock(
   api: ApiPromise,
@@ -32,45 +36,26 @@ export async function createAndFinalizeBlock(
 
   return {
     duration: Date.now() - startTime,
-    hash: block.get("hash").toString(),
+    hash: block.toJSON().hash as string, // toString doesn't work for block hashes
   };
 }
 
+// Given a deposit amount, returns the amount burned (80%) and deposited to treasury (20%).
+// This is meant to precisely mimic the logic in the Moonbeam runtimes where the burn amount
+// is calculated and the treasury is treated as the remainder. This precision is important to
+// avoid off-by-one errors.
+export function calculateFeePortions(amount: bigint): { burnt: bigint; treasury: bigint } {
+  const burnt = (amount * 80n) / 100n; // 20% goes to treasury
+  return { burnt, treasury: amount - burnt };
+}
+
 export interface TxWithEventAndFee extends TxWithEvent {
-  fee: RuntimeDispatchInfo;
+  fee: RuntimeDispatchInfo | RuntimeDispatchInfoV1;
 }
 
 export interface BlockDetails {
   block: Block;
   txWithEvents: TxWithEventAndFee[];
-}
-
-export function mapExtrinsics(
-  extrinsics: Extrinsic[],
-  records: FrameSystemEventRecord[],
-  fees?: RuntimeDispatchInfo[]
-): TxWithEventAndFee[] {
-  return extrinsics.map((extrinsic, index): TxWithEventAndFee => {
-    let dispatchError: DispatchError | undefined;
-    let dispatchInfo: DispatchInfo | undefined;
-
-    const events = records
-      .filter(({ phase }) => phase.isApplyExtrinsic && phase.asApplyExtrinsic.eq(index))
-      .map(({ event }) => {
-        if (event.section === "system") {
-          if (event.method === "ExtrinsicSuccess") {
-            dispatchInfo = event.data[0] as any as DispatchInfo;
-          } else if (event.method === "ExtrinsicFailed") {
-            dispatchError = event.data[0] as any as DispatchError;
-            dispatchInfo = event.data[1] as any as DispatchInfo;
-          }
-        }
-
-        return event as any;
-      });
-
-    return { dispatchError, dispatchInfo, events, extrinsic, fee: fees ? fees[index] : undefined };
-  });
 }
 
 const getBlockDetails = async (
@@ -134,7 +119,6 @@ export const verifyBlockFees = async (
   debug(`========= Checking block ${fromBlockNumber}...${toBlockNumber}`);
   let sumBlockFees = 0n;
   let sumBlockBurnt = 0n;
-  let blockCount = 0;
 
   // Get from block hash and totalSupply
   const fromPreBlockHash = (await api.rpc.chain.getBlockHash(fromBlockNumber - 1)).toString();
@@ -152,7 +136,6 @@ export const verifyBlockFees = async (
     api,
     { from: fromBlockNumber, to: toBlockNumber, concurrency: 5 },
     async (blockDetails) => {
-      blockCount++;
       let blockFees = 0n;
       let blockBurnt = 0n;
 
@@ -172,7 +155,6 @@ export const verifyBlockFees = async (
 
         let txFees = 0n;
         let txBurnt = 0n;
-
         // For every extrinsic, iterate over every event
         // and search for ExtrinsicSuccess or ExtrinsicFailed
         for (const event of events) {
@@ -187,40 +169,60 @@ export const verifyBlockFees = async (
 
             // We are only interested in fee paying extrinsics:
             // Either ethereum transactions or signed extrinsics with fees (substrate tx)
-            // TODO: sudo should not have paysFee
             if (
-              dispatchInfo.paysFee.isYes &&
-              extrinsic.method.section !== "sudo" &&
-              (!extrinsic.signer.isEmpty || extrinsic.method.section == "ethereum")
+              (dispatchInfo.paysFee.isYes && !extrinsic.signer.isEmpty) ||
+              extrinsic.method.section == "ethereum"
             ) {
               if (extrinsic.method.section == "ethereum") {
                 // For Ethereum tx we caluculate fee by first converting weight to gas
-                const gasFee = dispatchInfo.weight.toBigInt() / WEIGHT_PER_GAS;
+                const gasUsed = (dispatchInfo as any).weight.refTime.toBigInt() / WEIGHT_PER_GAS;
                 let ethTxWrapper = extrinsic.method.args[0] as any;
-                let gasPrice;
+
+                let number = blockDetails.block.header.number.toNumber();
+                // The on-chain base fee used by the transaction. Aka the parent block's base fee.
+                //
+                // Note on 1559 fees: no matter what the user was willing to pay (maxFeePerGas),
+                // the transaction fee is ultimately computed using the onchain base fee. The
+                // additional tip eventually paid by the user (maxPriorityFeePerGas) is purely a
+                // prioritization component: the EVM is not aware of it and thus not part of the
+                // weight cost of the extrinsic.
+                let baseFeePerGas = BigInt(
+                  (await context.web3.eth.getBlock(number - 1)).baseFeePerGas
+                );
+                let priorityFee;
+
                 // Transaction is an enum now with as many variants as supported transaction types.
                 if (ethTxWrapper.isLegacy) {
-                  gasPrice = ethTxWrapper.asLegacy.gasPrice.toBigInt();
+                  priorityFee = ethTxWrapper.asLegacy.gasPrice.toBigInt();
                 } else if (ethTxWrapper.isEip2930) {
-                  gasPrice = ethTxWrapper.asEip2930.gasPrice.toBigInt();
+                  priorityFee = ethTxWrapper.asEip2930.gasPrice.toBigInt();
                 } else if (ethTxWrapper.isEip1559) {
-                  let number = blockDetails.block.header.number.toNumber();
-                  // The on-chain base fee used by the transaction. Aka the parent block's base fee.
-                  //
-                  // Note on 1559 fees: no matter what the user was willing to pay (maxFeePerGas),
-                  // the transaction fee is ultimately computed using the onchain base fee. The
-                  // additional tip eventually paid by the user (maxPriorityFeePerGas) is purely a
-                  // prioritization component: the EVM is not aware of it and thus not part of the
-                  // weight cost of the extrinsic.
-                  gasPrice = BigInt((await context.web3.eth.getBlock(number - 1)).baseFeePerGas);
+                  priorityFee = ethTxWrapper.asEip1559.maxPriorityFeePerGas.toBigInt();
                 }
-                // And then multiplying by gasPrice
-                txFees = gasFee * gasPrice;
+
+                let effectiveTipPerGas = priorityFee - baseFeePerGas;
+                if (effectiveTipPerGas < 0n) {
+                  effectiveTipPerGas = 0n;
+                }
+
+                // Calculate the fees paid for base fee independently from tip fee. Both are subject
+                // to 80/20 split (burn/treasury) but calculating these over the sum of the two
+                // rather than independently leads to off-by-one errors.
+                const baseFeesPaid = gasUsed * baseFeePerGas;
+                const tipAsFeesPaid = gasUsed * effectiveTipPerGas;
+
+                const baseFeePortions = calculateFeePortions(baseFeesPaid);
+                const tipFeePortions = calculateFeePortions(tipAsFeesPaid);
+
+                txFees += baseFeesPaid + tipAsFeesPaid;
+                txBurnt += baseFeePortions.burnt;
+                txBurnt += tipFeePortions.burnt;
               } else {
                 // For a regular substrate tx, we use the partialFee
+                let feePortions = calculateFeePortions(fee.partialFee.toBigInt());
                 txFees = fee.partialFee.toBigInt();
+                txBurnt += feePortions.burnt;
               }
-              txBurnt += (txFees * 80n) / 100n; // 20% goes to treasury
 
               blockFees += txFees;
               blockBurnt += txBurnt;
@@ -249,23 +251,30 @@ export const verifyBlockFees = async (
         // Then search for Deposit event from treasury
         // This is for bug detection when the fees are not matching the expected value
         // TODO: sudo should not have treasury event
-        for (const event of events) {
-          if (
-            event.section == "treasury" &&
-            event.method == "Deposit" &&
-            extrinsic.method.section !== "sudo"
-          ) {
-            const deposit = (event.data[0] as any).toBigInt();
-            // Compare deposit event amont to what should have been sent to deposit
-            // (if they don't match, which is not a desired behavior)
-            expect(txFees - txBurnt).to.eq(deposit);
-            if (txFees - txBurnt !== deposit) {
-              debug("Desposit Amount Discrepancy!");
-              debug(`fees not burnt : ${(txFees - txBurnt).toString().padStart(30, " ")}`);
-              debug(`       deposit : ${deposit.toString().padStart(30, " ")}`);
-            }
-          }
-        }
+        const allDeposits = events
+          .filter(
+            (event) =>
+              event.section == "treasury" &&
+              event.method == "Deposit" &&
+              extrinsic.method.section !== "sudo"
+          )
+          .map((event) => (event.data[0] as any).toBigInt())
+          .reduce((p, v) => p + v, 0n);
+
+        expect(
+          txFees - txBurnt,
+          `Desposit Amount Discrepancy!\n` +
+            `    Block: #${blockDetails.block.header.number.toString()}\n` +
+            `Extrinsic: ${extrinsic.method.section}.${extrinsic.method.method}\n` +
+            `     Args: \n` +
+            extrinsic.args.map((arg) => `          - ${arg.toString()}\n`).join("") +
+            `   Events: \n` +
+            events
+              .map(({ data, method, section }) => `          - ${section}.${method}:: ${data}\n`)
+              .join("") +
+            `     fees not burnt : ${(txFees - txBurnt).toString().padStart(30, " ")}\n` +
+            `       all deposits : ${allDeposits.toString().padStart(30, " ")}`
+        ).to.eq(allDeposits);
       }
       sumBlockFees += blockFees;
       sumBlockBurnt += blockBurnt;
@@ -321,7 +330,7 @@ export const getBlockExtrinsic = async (
   return { block, extrinsic, events, resultEvent };
 };
 
-export async function jumpToRound(context: DevTestContext, round: Number): Promise<string | null> {
+export async function jumpToRound(context: DevTestContext, round: number): Promise<string | null> {
   let lastBlockHash = null;
   while (true) {
     const currentRound = (
@@ -337,10 +346,172 @@ export async function jumpToRound(context: DevTestContext, round: Number): Promi
   }
 }
 
+export async function jumpBlocks(context: DevTestContext, blockCount: number) {
+  while (blockCount > 0) {
+    (await context.createBlock()).block.hash.toString();
+    blockCount--;
+  }
+}
+
 export async function jumpRounds(context: DevTestContext, count: Number): Promise<string | null> {
   const round = (await context.polkadotApi.query.parachainStaking.round()).current
     .addn(count.valueOf())
     .toNumber();
 
   return jumpToRound(context, round);
+}
+
+export const getBlockTime = (signedBlock: any) =>
+  signedBlock.block.extrinsics
+    .find((item) => item.method.section == "timestamp")
+    .method.args[0].toNumber();
+
+export const checkBlockFinalized = async (api: ApiPromise, number: number) => {
+  return {
+    number,
+    finalized: (await api.rpc.moon.isBlockFinalized(await api.rpc.chain.getBlockHash(number)))
+      .isTrue,
+  };
+};
+
+// Determine if the block range intersects with an upgrade event
+export const checkTimeSliceForUpgrades = async (
+  api: ApiPromise,
+  blockNumbers: number[],
+  currentVersion: u32
+) => {
+  const apiAt = await api.at(await api.rpc.chain.getBlockHash(blockNumbers[0]));
+  const onChainRt = (await apiAt.query.system.lastRuntimeUpgrade()).unwrap().specVersion;
+  return { result: !onChainRt.eq(currentVersion), specVersion: onChainRt };
+};
+
+const fetchBlockTime = async (api: ApiPromise, blockNum: number) => {
+  const hash = await api.rpc.chain.getBlockHash(blockNum);
+  const block = await api.rpc.chain.getBlock(hash);
+  return getBlockTime(block);
+};
+
+export const fetchHistoricBlockNum = async (
+  api: ApiPromise,
+  blockNumber: number,
+  targetTime: number
+) => {
+  if (blockNumber <= 1) {
+    return 1;
+  }
+  const time = await fetchBlockTime(api, blockNumber);
+
+  if (time <= targetTime) {
+    return blockNumber;
+  }
+
+  return fetchHistoricBlockNum(
+    api,
+    blockNumber - Math.ceil((time - targetTime) / 30_000),
+    targetTime
+  );
+};
+
+export const getBlockArray = async (api: ApiPromise, timePeriod: number, limiter?: Bottleneck) => {
+  /**  
+  @brief Returns an sequential array of block numbers from a given period of time in the past
+  @param api Connected ApiPromise to perform queries on
+  @param timePeriod Moment in the past to search until
+  @param limiter Bottleneck rate limiter to throttle requests
+  */
+
+  if (limiter == null) {
+    limiter = new Bottleneck({ maxConcurrent: 10, minTime: 100 });
+  }
+  const finalizedHead = await limiter.schedule(() => api.rpc.chain.getFinalizedHead());
+  const signedBlock = await limiter.schedule(() => api.rpc.chain.getBlock(finalizedHead));
+
+  const lastBlockNumber = signedBlock.block.header.number.toNumber();
+  const lastBlockTime = getBlockTime(signedBlock);
+
+  const firstBlockTime = lastBlockTime - timePeriod;
+  debug(`Searching for the block at: ${new Date(firstBlockTime)}`);
+  const firstBlockNumber = (await limiter.wrap(fetchHistoricBlockNum)(
+    api,
+    lastBlockNumber,
+    firstBlockTime
+  )) as number;
+
+  const length = lastBlockNumber - firstBlockNumber;
+  return Array.from({ length }, (_, i) => firstBlockNumber + i);
+};
+
+export function extractWeight(
+  weightV1OrV2: u64 | Option<u64> | SpWeightsWeightV2Weight | Option<SpWeightsWeightV2Weight>
+) {
+  if ("isSome" in weightV1OrV2) {
+    const weight = weightV1OrV2.unwrap();
+    if ("refTime" in weight) {
+      return weight.refTime.unwrap();
+    }
+    return weight;
+  }
+  if ("refTime" in weightV1OrV2) {
+    return weightV1OrV2.refTime.unwrap();
+  }
+  return weightV1OrV2;
+}
+
+export function extractPreimageDeposit(
+  request:
+    | Option<ITuple<[AccountId20, u128]>>
+    | {
+        readonly deposit: ITuple<[AccountId20, u128]>;
+        readonly len: u32;
+      }
+    | {
+        readonly deposit: Option<ITuple<[AccountId20, u128]>>;
+        readonly count: u32;
+        readonly len: Option<u32>;
+      }
+) {
+  const deposit = "deposit" in request ? request.deposit : request;
+  if ("isSome" in deposit && deposit.isSome) {
+    return {
+      accountId: deposit.unwrap()[0].toHex(),
+      amount: deposit.unwrap()[1],
+    };
+  }
+
+  if (deposit.isEmpty) {
+    return { accountId: "", amount: 0n };
+  }
+
+  return {
+    accountId: deposit[0].toHex(),
+    amount: deposit[1],
+  };
+}
+
+export function mapExtrinsics(
+  extrinsics: Extrinsic[],
+  records: FrameSystemEventRecord[],
+  fees?: RuntimeDispatchInfo[] | RuntimeDispatchInfoV1[]
+): TxWithEventAndFee[] {
+  return extrinsics.map((extrinsic, index): TxWithEventAndFee => {
+    let dispatchError: DispatchError | undefined;
+    let dispatchInfo: DispatchInfo | undefined;
+
+    const events = records
+      .filter(({ phase }) => phase.isApplyExtrinsic && phase.asApplyExtrinsic.eq(index))
+      .map(({ event }) => {
+        if (event.section === "system") {
+          if (event.method === "ExtrinsicSuccess") {
+            dispatchInfo = event.data[0] as any as DispatchInfo;
+          } else if (event.method === "ExtrinsicFailed") {
+            dispatchError = event.data[0] as any as DispatchError;
+            dispatchInfo = event.data[1] as any as DispatchInfo;
+          }
+        }
+
+        return event as any;
+      });
+
+    return { dispatchError, dispatchInfo, events, extrinsic, fee: fees ? fees[index] : undefined };
+  });
 }

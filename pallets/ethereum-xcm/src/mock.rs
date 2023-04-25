@@ -64,7 +64,7 @@ frame_support::construct_runtime! {
 parameter_types! {
 	pub const BlockHashCount: u32 = 250;
 	pub BlockWeights: frame_system::limits::BlockWeights =
-		frame_system::limits::BlockWeights::simple_max(1024);
+		frame_system::limits::BlockWeights::simple_max(Weight::from_ref_time(1024));
 }
 
 impl frame_system::Config for Test {
@@ -72,16 +72,16 @@ impl frame_system::Config for Test {
 	type BlockWeights = ();
 	type BlockLength = ();
 	type DbWeight = ();
-	type Origin = Origin;
+	type RuntimeOrigin = RuntimeOrigin;
 	type Index = u64;
 	type BlockNumber = BlockNumber;
 	type Hash = H256;
-	type Call = Call;
+	type RuntimeCall = RuntimeCall;
 	type Hashing = BlakeTwo256;
 	type AccountId = AccountId32;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = sp_runtime::generic::Header<BlockNumber, BlakeTwo256>;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type BlockHashCount = BlockHashCount;
 	type Version = ();
 	type PalletInfo = PalletInfo;
@@ -104,7 +104,7 @@ parameter_types! {
 impl pallet_balances::Config for Test {
 	type MaxLocks = MaxLocks;
 	type Balance = u64;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type DustRemoval = ();
 	type ExistentialDeposit = ExistentialDeposit;
 	type AccountStore = System;
@@ -127,7 +127,7 @@ impl pallet_timestamp::Config for Test {
 pub struct FixedGasPrice;
 impl FeeCalculator for FixedGasPrice {
 	fn min_gas_price() -> (U256, Weight) {
-		(1.into(), 0u64)
+		(1.into(), Weight::zero())
 	}
 }
 
@@ -146,6 +146,7 @@ parameter_types! {
 	pub const ChainId: u64 = 42;
 	pub const EVMModuleId: PalletId = PalletId(*b"py/evmpa");
 	pub const BlockGasLimit: U256 = U256::MAX;
+	pub WeightPerGas: Weight = Weight::from_ref_time(1);
 }
 
 pub struct HashedAddressMapping;
@@ -160,12 +161,13 @@ impl AddressMapping<AccountId32> for HashedAddressMapping {
 
 impl pallet_evm::Config for Test {
 	type FeeCalculator = FixedGasPrice;
-	type GasWeightMapping = ();
+	type GasWeightMapping = pallet_evm::FixedGasWeightMapping<Self>;
+	type WeightPerGas = WeightPerGas;
 	type CallOrigin = EnsureAddressTruncated;
 	type WithdrawOrigin = EnsureAddressTruncated;
 	type AddressMapping = HashedAddressMapping;
 	type Currency = Balances;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type PrecompilesType = ();
 	type PrecompilesValue = ();
 	type Runner = pallet_evm::runner::stack::Runner<Self>;
@@ -174,15 +176,16 @@ impl pallet_evm::Config for Test {
 	type OnChargeTransaction = ();
 	type FindAuthor = FindAuthorTruncated;
 	type BlockHashMapping = pallet_ethereum::EthereumBlockHashMapping<Self>;
+	type OnCreate = ();
 }
 
 impl pallet_ethereum::Config for Test {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type StateRoot = IntermediateStateRoot<Self>;
 }
 
 parameter_types! {
-	pub ReservedXcmpWeight: Weight = u64::max_value();
+	pub ReservedXcmpWeight: Weight = Weight::from_ref_time(u64::max_value());
 }
 
 #[derive(
@@ -193,8 +196,10 @@ pub enum ProxyType {
 	Any = 1,
 }
 
-impl InstanceFilter<Call> for ProxyType {
-	fn filter(&self, _c: &Call) -> bool {
+impl pallet_evm_precompile_proxy::EvmProxyCallFilter for ProxyType {}
+
+impl InstanceFilter<RuntimeCall> for ProxyType {
+	fn filter(&self, _c: &RuntimeCall) -> bool {
 		match self {
 			ProxyType::NotAllowed => false,
 			ProxyType::Any => true,
@@ -216,8 +221,8 @@ parameter_types! {
 }
 
 impl pallet_proxy::Config for Test {
-	type Event = Event;
-	type Call = Call;
+	type RuntimeEvent = RuntimeEvent;
+	type RuntimeCall = RuntimeCall;
 	type Currency = Balances;
 	type ProxyType = ProxyType;
 	type ProxyDepositBase = ProxyCost;
@@ -254,19 +259,19 @@ impl crate::Config for Test {
 	type ControllerOrigin = EnsureRoot<AccountId32>;
 }
 
-impl fp_self_contained::SelfContainedCall for Call {
+impl fp_self_contained::SelfContainedCall for RuntimeCall {
 	type SignedInfo = H160;
 
 	fn is_self_contained(&self) -> bool {
 		match self {
-			Call::Ethereum(call) => call.is_self_contained(),
+			RuntimeCall::Ethereum(call) => call.is_self_contained(),
 			_ => false,
 		}
 	}
 
 	fn check_self_contained(&self) -> Option<Result<Self::SignedInfo, TransactionValidityError>> {
 		match self {
-			Call::Ethereum(call) => call.check_self_contained(),
+			RuntimeCall::Ethereum(call) => call.check_self_contained(),
 			_ => None,
 		}
 	}
@@ -274,11 +279,11 @@ impl fp_self_contained::SelfContainedCall for Call {
 	fn validate_self_contained(
 		&self,
 		info: &Self::SignedInfo,
-		dispatch_info: &DispatchInfoOf<Call>,
+		dispatch_info: &DispatchInfoOf<RuntimeCall>,
 		len: usize,
 	) -> Option<TransactionValidity> {
 		match self {
-			Call::Ethereum(call) => call.validate_self_contained(info, dispatch_info, len),
+			RuntimeCall::Ethereum(call) => call.validate_self_contained(info, dispatch_info, len),
 			_ => None,
 		}
 	}
@@ -286,11 +291,13 @@ impl fp_self_contained::SelfContainedCall for Call {
 	fn pre_dispatch_self_contained(
 		&self,
 		info: &Self::SignedInfo,
-		dispatch_info: &DispatchInfoOf<Call>,
+		dispatch_info: &DispatchInfoOf<RuntimeCall>,
 		len: usize,
 	) -> Option<Result<(), TransactionValidityError>> {
 		match self {
-			Call::Ethereum(call) => call.pre_dispatch_self_contained(info, dispatch_info, len),
+			RuntimeCall::Ethereum(call) => {
+				call.pre_dispatch_self_contained(info, dispatch_info, len)
+			}
 			_ => None,
 		}
 	}
@@ -301,9 +308,11 @@ impl fp_self_contained::SelfContainedCall for Call {
 	) -> Option<sp_runtime::DispatchResultWithInfo<sp_runtime::traits::PostDispatchInfoOf<Self>>> {
 		use sp_runtime::traits::Dispatchable as _;
 		match self {
-			call @ Call::Ethereum(pallet_ethereum::Call::transact { .. }) => Some(call.dispatch(
-				Origin::from(pallet_ethereum::RawOrigin::EthereumTransaction(info)),
-			)),
+			call @ RuntimeCall::Ethereum(pallet_ethereum::Call::transact { .. }) => {
+				Some(call.dispatch(RuntimeOrigin::from(
+					pallet_ethereum::RawOrigin::EthereumTransaction(info),
+				)))
+			}
 			_ => None,
 		}
 	}

@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 pragma solidity >=0.8.3;
 
+/// @dev The ParachainStaking contract's address.
+address constant PARACHAIN_STAKING_ADDRESS = 0x0000000000000000000000000000000000000800;
+
+/// @dev The ParachainStaking contract's instance.
+ParachainStaking constant PARACHAIN_STAKING_CONTRACT = ParachainStaking(
+    PARACHAIN_STAKING_ADDRESS
+);
+
 /// @author The Moonbeam Team
 /// @title Pallet Parachain Staking Interface
 /// @dev The interface through which solidity contracts will interact with Parachain Staking
@@ -35,6 +43,37 @@ interface ParachainStaking {
     /// @return The total points awarded to all collators in the round
     function points(uint256 round) external view returns (uint256);
 
+    /// @dev Total points awarded to a specific collator in a particular round.
+    /// A value of `0` may signify that no blocks were produced or that the storage for that round has been removed
+    /// @custom:selector bfea66ac
+    /// @param round the round for which we are querying the awarded points
+    /// @param candidate The candidate to whom the points are awarded
+    /// @return The total points awarded to the collator for the provided round
+    function awardedPoints(uint32 round, address candidate)
+        external
+        view
+        returns (uint32);
+
+    /// @dev The amount delegated in support of the candidate by the delegator
+    /// @custom:selector a73e51bc
+    /// @param delegator Who made this delegation
+    /// @param candidate The candidate for which the delegation is in support of
+    /// @return The amount of the delegation in support of the candidate by the delegator
+    function delegationAmount(address delegator, address candidate)
+        external
+        view
+        returns (uint256);
+
+    /// @dev Whether the delegation is in the top delegations
+    /// @custom:selector 91cc8657
+    /// @param delegator Who made this delegation
+    /// @param candidate The candidate for which the delegation is in support of
+    /// @return If delegation is in top delegations (is counted)
+    function isInTopDelegations(address delegator, address candidate)
+        external
+        view
+        returns (bool);
+
     /// @dev Get the minimum delegation amount
     /// @custom:selector 02985992
     /// @return The minimum delegation amount
@@ -57,7 +96,17 @@ interface ParachainStaking {
     function candidateDelegationCount(address candidate)
         external
         view
-        returns (uint256);
+        returns (uint32);
+
+    /// @dev Get the CandidateAutoCompoundingDelegationCount weight hint
+    /// @custom:selector 905f0806
+    /// @param candidate The address for which we are querying the auto compounding
+    ///     delegation count
+    /// @return The number of auto compounding delegations
+    function candidateAutoCompoundingDelegationCount(address candidate)
+        external
+        view
+        returns (uint32);
 
     /// @dev Get the DelegatorDelegationCount weight hint
     /// @custom:selector 067ec822
@@ -100,6 +149,16 @@ interface ParachainStaking {
         external
         view
         returns (bool);
+
+    /// @dev Returns the percent value of auto-compound set for a delegation
+    /// @custom:selector b4d4c7fd
+    /// @param delegator the delegator that made the delegation
+    /// @param candidate the candidate for which the delegation was made
+    /// @return Percent of rewarded amount that is auto-compounded on each payout
+    function delegationAutoCompound(address delegator, address candidate)
+        external
+        view
+        returns (uint8);
 
     /// @dev Join the set of collator candidates
     /// @custom:selector 1f2f83ad
@@ -166,6 +225,24 @@ interface ParachainStaking {
         uint256 delegatorDelegationCount
     ) external;
 
+    /// @dev Make a delegation in support of a collator candidate
+    /// @custom:selector 4b8bc9bf
+    /// @param candidate The address of the supported collator candidate
+    /// @param amount The amount bonded in support of the collator candidate
+    /// @param autoCompound The percent of reward that should be auto-compounded
+    /// @param candidateDelegationCount The number of delegations in support of the candidate
+    /// @param candidateAutoCompoundingDelegationCount The number of auto-compounding delegations
+    /// in support of the candidate
+    /// @param delegatorDelegationCount The number of existing delegations by the caller
+    function delegateWithAutoCompound(
+        address candidate,
+        uint256 amount,
+        uint8 autoCompound,
+        uint256 candidateDelegationCount,
+        uint256 candidateAutoCompoundingDelegationCount,
+        uint256 delegatorDelegationCount
+    ) external;
+
     /// @notice DEPRECATED use batch util with scheduleRevokeDelegation for all delegations
     /// @dev Request to leave the set of delegators
     /// @custom:selector f939dadb
@@ -215,4 +292,37 @@ interface ParachainStaking {
     /// @custom:selector c90eee83
     /// @param candidate The address of the candidate
     function cancelDelegationRequest(address candidate) external;
+
+    /// @dev Sets an auto-compound value for a delegation
+    /// @custom:selector faa1786f
+    /// @param candidate The address of the supported collator candidate
+    /// @param value The percent of reward that should be auto-compounded
+    /// @param candidateAutoCompoundingDelegationCount The number of auto-compounding delegations
+    /// in support of the candidate
+    /// @param delegatorDelegationCount The number of existing delegations by the caller
+    function setAutoCompound(
+        address candidate,
+        uint8 value,
+        uint256 candidateAutoCompoundingDelegationCount,
+        uint256 delegatorDelegationCount
+    ) external;
+
+    /// @dev Fetch the total staked amount of a delegator, regardless of the
+    /// candidate.
+    /// @custom:selector e6861713
+    /// @param delegator Address of the delegator.
+    /// @return Total amount of stake.
+    function getDelegatorTotalStaked(address delegator)
+        external
+        view
+        returns (uint256);
+
+    /// @dev Fetch the total staked towards a candidate.
+    /// @custom:selector bc5a1043
+    /// @param candidate Address of the candidate.
+    /// @return Total amount of stake.
+    function getCandidateTotalCounted(address candidate)
+        external
+        view
+        returns (uint256);
 }

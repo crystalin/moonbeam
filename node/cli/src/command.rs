@@ -17,11 +17,12 @@
 //! This module constructs and executes the appropriate service components for the given subcommand
 
 use crate::cli::{Cli, RelayChainCli, RunCmd, Subcommand};
-use cli_opt::{EthApi, RpcConfig};
-use cumulus_client_cli::generate_genesis_block;
+use cumulus_client_cli::{extract_genesis_wasm, generate_genesis_block};
 use cumulus_primitives_core::ParaId;
 use frame_benchmarking_cli::BenchmarkCmd;
-use log::info;
+use log::{info, warn};
+use moonbeam_cli_opt::{EthApi, RpcConfig};
+use moonbeam_service::{chain_spec, frontier_database_dir, IdentifyVariant};
 use parity_scale_codec::Encode;
 #[cfg(feature = "westend-native")]
 use polkadot_service::WestendChainSpec;
@@ -33,7 +34,6 @@ use sc_service::{
 	config::{BasePath, PrometheusConfig},
 	DatabaseSource,
 };
-use service::{chain_spec, frontier_database_dir, IdentifyVariant};
 use sp_core::hexdisplay::HexDisplay;
 use sp_runtime::traits::{AccountIdConversion, Block as _};
 use std::{io::Write, net::SocketAddr};
@@ -137,11 +137,11 @@ impl SubstrateCli for Cli {
 	fn native_runtime_version(spec: &Box<dyn sc_service::ChainSpec>) -> &'static RuntimeVersion {
 		match spec {
 			#[cfg(feature = "moonriver-native")]
-			spec if spec.is_moonriver() => return &service::moonriver_runtime::VERSION,
+			spec if spec.is_moonriver() => return &moonbeam_service::moonriver_runtime::VERSION,
 			#[cfg(feature = "moonbeam-native")]
-			spec if spec.is_moonbeam() => return &service::moonbeam_runtime::VERSION,
+			spec if spec.is_moonbeam() => return &moonbeam_service::moonbeam_runtime::VERSION,
 			#[cfg(feature = "moonbase-native")]
-			_ => return &service::moonbase_runtime::VERSION,
+			_ => return &moonbeam_service::moonbase_runtime::VERSION,
 			#[cfg(not(feature = "moonbase-native"))]
 			_ => panic!("invalid chain spec"),
 		}
@@ -193,16 +193,6 @@ impl SubstrateCli for RelayChainCli {
 	fn native_runtime_version(chain_spec: &Box<dyn ChainSpec>) -> &'static RuntimeVersion {
 		polkadot_cli::Cli::native_runtime_version(chain_spec)
 	}
-}
-
-#[allow(clippy::borrowed_box)]
-fn extract_genesis_wasm(chain_spec: &Box<dyn sc_service::ChainSpec>) -> Result<Vec<u8>> {
-	let mut storage = chain_spec.build_storage()?;
-
-	storage
-		.top
-		.remove(sp_core::storage::well_known_keys::CODE)
-		.ok_or_else(|| "Could not find wasm file in genesis state!".into())
 }
 
 fn validate_trace_environment(cli: &Cli) -> Result<()> {
@@ -276,28 +266,30 @@ pub fn run() -> Result<()> {
 		Some(Subcommand::CheckBlock(cmd)) => {
 			let runner = cli.create_runner(cmd)?;
 			runner.async_run(|mut config| {
-				let (client, _, import_queue, task_manager) = service::new_chain_ops(&mut config)?;
+				let (client, _, import_queue, task_manager) =
+					moonbeam_service::new_chain_ops(&mut config)?;
 				Ok((cmd.run(client, import_queue), task_manager))
 			})
 		}
 		Some(Subcommand::ExportBlocks(cmd)) => {
 			let runner = cli.create_runner(cmd)?;
 			runner.async_run(|mut config| {
-				let (client, _, _, task_manager) = service::new_chain_ops(&mut config)?;
+				let (client, _, _, task_manager) = moonbeam_service::new_chain_ops(&mut config)?;
 				Ok((cmd.run(client, config.database), task_manager))
 			})
 		}
 		Some(Subcommand::ExportState(cmd)) => {
 			let runner = cli.create_runner(cmd)?;
 			runner.async_run(|mut config| {
-				let (client, _, _, task_manager) = service::new_chain_ops(&mut config)?;
+				let (client, _, _, task_manager) = moonbeam_service::new_chain_ops(&mut config)?;
 				Ok((cmd.run(client, config.chain_spec), task_manager))
 			})
 		}
 		Some(Subcommand::ImportBlocks(cmd)) => {
 			let runner = cli.create_runner(cmd)?;
 			runner.async_run(|mut config| {
-				let (client, _, import_queue, task_manager) = service::new_chain_ops(&mut config)?;
+				let (client, _, import_queue, task_manager) =
+					moonbeam_service::new_chain_ops(&mut config)?;
 				Ok((cmd.run(client, import_queue), task_manager))
 			})
 		}
@@ -307,9 +299,8 @@ pub fn run() -> Result<()> {
 				// Although the cumulus_client_cli::PurgeCommand will extract the relay chain id,
 				// we need to extract it here to determine whether we are running the dev service.
 				let extension = chain_spec::Extensions::try_get(&*config.chain_spec);
-				let relay_chain_id = extension.map(|e| e.relay_chain.clone());
-				let dev_service =
-					cli.run.dev_service || relay_chain_id == Some("dev-service".to_string());
+				let relay_chain_id = extension.map(|e| e.relay_chain.as_str());
+				let dev_service = cli.run.dev_service || relay_chain_id == Some("dev-service");
 
 				// Remove Frontier offchain db
 				let frontier_database_config = match config.database {
@@ -354,9 +345,9 @@ pub fn run() -> Result<()> {
 			match chain_spec {
 				#[cfg(feature = "moonriver-native")]
 				spec if spec.is_moonriver() => runner.async_run(|mut config| {
-					let params = service::new_partial::<
-						service::moonriver_runtime::RuntimeApi,
-						service::MoonriverExecutor,
+					let params = moonbeam_service::new_partial::<
+						moonbeam_service::moonriver_runtime::RuntimeApi,
+						moonbeam_service::MoonriverExecutor,
 					>(&mut config, false)?;
 
 					Ok((
@@ -366,9 +357,9 @@ pub fn run() -> Result<()> {
 				}),
 				#[cfg(feature = "moonbeam-native")]
 				spec if spec.is_moonbeam() => runner.async_run(|mut config| {
-					let params = service::new_partial::<
-						service::moonbeam_runtime::RuntimeApi,
-						service::MoonbeamExecutor,
+					let params = moonbeam_service::new_partial::<
+						moonbeam_service::moonbeam_runtime::RuntimeApi,
+						moonbeam_service::MoonbeamExecutor,
 					>(&mut config, false)?;
 
 					Ok((
@@ -378,9 +369,9 @@ pub fn run() -> Result<()> {
 				}),
 				#[cfg(feature = "moonbase-native")]
 				_ => runner.async_run(|mut config| {
-					let params = service::new_partial::<
-						service::moonbase_runtime::RuntimeApi,
-						service::MoonbaseExecutor,
+					let params = moonbeam_service::new_partial::<
+						moonbeam_service::moonbase_runtime::RuntimeApi,
+						moonbeam_service::MoonbaseExecutor,
 					>(&mut config, false)?;
 
 					Ok((
@@ -399,7 +390,7 @@ pub fn run() -> Result<()> {
 
 			// Cumulus approach here, we directly call the generic load_spec func
 			let chain_spec = load_spec(
-				&params.chain.clone().unwrap_or_default(),
+				params.chain.as_deref().unwrap_or_default(),
 				params.parachain_id.unwrap_or(1000).into(),
 				&cli.run,
 			)?;
@@ -408,7 +399,7 @@ pub fn run() -> Result<()> {
 			let output_buf = match chain_spec {
 				#[cfg(feature = "moonriver-native")]
 				chain_spec if chain_spec.is_moonriver() => {
-					let block: service::moonriver_runtime::Block =
+					let block: moonbeam_service::moonriver_runtime::Block =
 						generate_genesis_block(&*chain_spec, state_version)?;
 					let raw_header = block.header().encode();
 					let output_buf = if params.raw {
@@ -420,7 +411,7 @@ pub fn run() -> Result<()> {
 				}
 				#[cfg(feature = "moonbeam-native")]
 				chain_spec if chain_spec.is_moonbeam() => {
-					let block: service::moonbeam_runtime::Block =
+					let block: moonbeam_service::moonbeam_runtime::Block =
 						generate_genesis_block(&*chain_spec, state_version)?;
 					let raw_header = block.header().encode();
 					let output_buf = if params.raw {
@@ -432,7 +423,7 @@ pub fn run() -> Result<()> {
 				}
 				#[cfg(feature = "moonbase-native")]
 				_ => {
-					let block: service::moonbase_runtime::Block =
+					let block: moonbeam_service::moonbase_runtime::Block =
 						generate_genesis_block(&*chain_spec, state_version)?;
 					let raw_header = block.header().encode();
 					let output_buf = if params.raw {
@@ -459,8 +450,9 @@ pub fn run() -> Result<()> {
 			builder.with_profiling(sc_tracing::TracingReceiver::Log, "");
 			let _ = builder.init();
 
-			let raw_wasm_blob =
-				extract_genesis_wasm(&cli.load_spec(&params.chain.clone().unwrap_or_default())?)?;
+			let raw_wasm_blob = extract_genesis_wasm(
+				&*cli.load_spec(params.chain.as_deref().unwrap_or_default())?,
+			)?;
 			let output_buf = if params.raw {
 				raw_wasm_blob
 			} else {
@@ -487,7 +479,7 @@ pub fn run() -> Result<()> {
 							#[cfg(feature = "moonriver-native")]
 							spec if spec.is_moonriver() => {
 								return runner.sync_run(|config| {
-									cmd.run::<service::moonriver_runtime::Block, service::MoonriverExecutor>(
+									cmd.run::<moonbeam_service::moonriver_runtime::Block, moonbeam_service::MoonriverExecutor>(
 										config,
 									)
 								})
@@ -495,7 +487,7 @@ pub fn run() -> Result<()> {
 							#[cfg(feature = "moonbeam-native")]
 							spec if spec.is_moonbeam() => {
 								return runner.sync_run(|config| {
-									cmd.run::<service::moonbeam_runtime::Block, service::MoonbeamExecutor>(
+									cmd.run::<moonbeam_service::moonbeam_runtime::Block, moonbeam_service::MoonbeamExecutor>(
 										config,
 									)
 								})
@@ -503,7 +495,7 @@ pub fn run() -> Result<()> {
 							#[cfg(feature = "moonbase-native")]
 							_ => {
 								return runner.sync_run(|config| {
-									cmd.run::<service::moonbase_runtime::Block, service::MoonbaseExecutor>(
+									cmd.run::<moonbeam_service::moonbase_runtime::Block, moonbeam_service::MoonbaseExecutor>(
 										config,
 									)
 								})
@@ -513,7 +505,7 @@ pub fn run() -> Result<()> {
 						}
 					} else if cfg!(feature = "moonbase-runtime-benchmarks") {
 						return runner.sync_run(|config| {
-							cmd.run::<service::moonbase_runtime::Block, service::MoonbaseExecutor>(
+							cmd.run::<moonbeam_service::moonbase_runtime::Block, moonbeam_service::MoonbaseExecutor>(
 								config,
 							)
 						});
@@ -529,9 +521,9 @@ pub fn run() -> Result<()> {
 						#[cfg(feature = "moonriver-native")]
 						spec if spec.is_moonriver() => {
 							return runner.sync_run(|mut config| {
-								let params = service::new_partial::<
-									service::moonriver_runtime::RuntimeApi,
-									service::MoonriverExecutor,
+								let params = moonbeam_service::new_partial::<
+									moonbeam_service::moonriver_runtime::RuntimeApi,
+									moonbeam_service::MoonriverExecutor,
 								>(&mut config, false)?;
 
 								cmd.run(params.client)
@@ -540,9 +532,9 @@ pub fn run() -> Result<()> {
 						#[cfg(feature = "moonbeam-native")]
 						spec if spec.is_moonbeam() => {
 							return runner.sync_run(|mut config| {
-								let params = service::new_partial::<
-									service::moonbeam_runtime::RuntimeApi,
-									service::MoonbeamExecutor,
+								let params = moonbeam_service::new_partial::<
+									moonbeam_service::moonbeam_runtime::RuntimeApi,
+									moonbeam_service::MoonbeamExecutor,
 								>(&mut config, false)?;
 
 								cmd.run(params.client)
@@ -551,9 +543,9 @@ pub fn run() -> Result<()> {
 						#[cfg(feature = "moonbase-native")]
 						_ => {
 							return runner.sync_run(|mut config| {
-								let params = service::new_partial::<
-									service::moonbase_runtime::RuntimeApi,
-									service::MoonbaseExecutor,
+								let params = moonbeam_service::new_partial::<
+									moonbeam_service::moonbase_runtime::RuntimeApi,
+									moonbeam_service::MoonbaseExecutor,
 								>(&mut config, false)?;
 
 								cmd.run(params.client)
@@ -563,15 +555,21 @@ pub fn run() -> Result<()> {
 						_ => panic!("invalid chain spec"),
 					}
 				}
+				#[cfg(not(feature = "runtime-benchmarks"))]
+				BenchmarkCmd::Storage(_) => Err(
+					"Storage benchmarking can be enabled with `--features runtime-benchmarks`."
+						.into(),
+				),
+				#[cfg(feature = "runtime-benchmarks")]
 				BenchmarkCmd::Storage(cmd) => {
 					let chain_spec = &runner.config().chain_spec;
 					match chain_spec {
 						#[cfg(feature = "moonriver-native")]
 						spec if spec.is_moonriver() => {
 							return runner.sync_run(|mut config| {
-								let params = service::new_partial::<
-									service::moonriver_runtime::RuntimeApi,
-									service::MoonriverExecutor,
+								let params = moonbeam_service::new_partial::<
+									moonbeam_service::moonriver_runtime::RuntimeApi,
+									moonbeam_service::MoonriverExecutor,
 								>(&mut config, false)?;
 
 								let db = params.backend.expose_db();
@@ -583,9 +581,9 @@ pub fn run() -> Result<()> {
 						#[cfg(feature = "moonbeam-native")]
 						spec if spec.is_moonbeam() => {
 							return runner.sync_run(|mut config| {
-								let params = service::new_partial::<
-									service::moonbeam_runtime::RuntimeApi,
-									service::MoonbeamExecutor,
+								let params = moonbeam_service::new_partial::<
+									moonbeam_service::moonbeam_runtime::RuntimeApi,
+									moonbeam_service::MoonbeamExecutor,
 								>(&mut config, false)?;
 
 								let db = params.backend.expose_db();
@@ -597,9 +595,9 @@ pub fn run() -> Result<()> {
 						#[cfg(feature = "moonbase-native")]
 						_ => {
 							return runner.sync_run(|mut config| {
-								let params = service::new_partial::<
-									service::moonbase_runtime::RuntimeApi,
-									service::MoonbaseExecutor,
+								let params = moonbeam_service::new_partial::<
+									moonbeam_service::moonbase_runtime::RuntimeApi,
+									moonbeam_service::MoonbaseExecutor,
 								>(&mut config, false)?;
 
 								let db = params.backend.expose_db();
@@ -613,6 +611,7 @@ pub fn run() -> Result<()> {
 					}
 				}
 				BenchmarkCmd::Overhead(_) => Err("Unsupported benchmarking command".into()),
+				BenchmarkCmd::Extrinsic(_) => Err("Unsupported benchmarking command".into()),
 				BenchmarkCmd::Machine(cmd) => {
 					return runner.sync_run(|config| {
 						cmd.run(
@@ -629,21 +628,25 @@ pub fn run() -> Result<()> {
 			let chain_spec = &runner.config().chain_spec;
 			match chain_spec {
 				#[cfg(feature = "moonriver-native")]
-				spec if spec.is_moonriver() => {
-					runner.async_run(|config| {
-						let registry = config.prometheus_config.as_ref().map(|cfg| &cfg.registry);
-						let task_manager =
-							sc_service::TaskManager::new(config.tokio_handle.clone(), registry)
-								.map_err(|e| {
-									sc_cli::Error::Service(sc_service::Error::Prometheus(e))
-								})?;
+				spec if spec.is_moonriver() => runner.async_run(|config| {
+					let registry = config.prometheus_config.as_ref().map(|cfg| &cfg.registry);
+					let task_manager =
+						sc_service::TaskManager::new(config.tokio_handle.clone(), registry)
+							.map_err(|e| {
+								sc_cli::Error::Service(sc_service::Error::Prometheus(e))
+							})?;
 
-						Ok((
-							cmd.run::<service::moonriver_runtime::Block, service::MoonriverExecutor>(config),
-							task_manager,
-						))
-					})
-				}
+					Ok((
+						cmd.run::<
+							moonbeam_service::moonriver_runtime::Block,
+							sp_wasm_interface::ExtendedHostFunctions<
+								sp_io::SubstrateHostFunctions,
+								<moonbeam_service::MoonriverExecutor
+									as sc_service::NativeExecutionDispatch>::ExtendHostFunctions,
+						>>(),
+						task_manager,
+					))
+				}),
 				#[cfg(feature = "moonbeam-native")]
 				spec if spec.is_moonbeam() => runner.async_run(|config| {
 					let registry = config.prometheus_config.as_ref().map(|cfg| &cfg.registry);
@@ -654,9 +657,13 @@ pub fn run() -> Result<()> {
 							})?;
 
 					Ok((
-						cmd.run::<service::moonbeam_runtime::Block, service::MoonbeamExecutor>(
-							config,
-						),
+						cmd.run::<
+							moonbeam_service::moonbeam_runtime::Block,
+							sp_wasm_interface::ExtendedHostFunctions<
+								sp_io::SubstrateHostFunctions,
+								<moonbeam_service::MoonbeamExecutor
+									as sc_service::NativeExecutionDispatch>::ExtendHostFunctions,
+						>>(),
 						task_manager,
 					))
 				}),
@@ -673,9 +680,13 @@ pub fn run() -> Result<()> {
 								})?;
 
 						Ok((
-							cmd.run::<service::moonbase_runtime::Block, service::MoonbaseExecutor>(
-								config,
-							),
+							cmd.run::<
+								moonbeam_service::moonbase_runtime::Block,
+								sp_wasm_interface::ExtendedHostFunctions<
+									sp_io::SubstrateHostFunctions,
+									<moonbeam_service::MoonbaseExecutor
+										as sc_service::NativeExecutionDispatch>::ExtendHostFunctions,
+							>>(),
 							task_manager,
 						))
 					})
@@ -714,7 +725,7 @@ pub fn run() -> Result<()> {
 					eth_statuses_cache: cli.run.eth_statuses_cache,
 					fee_history_limit: cli.run.fee_history_limit,
 					max_past_logs: cli.run.max_past_logs,
-					relay_chain_rpc_url: cli.run.base.relay_chain_rpc_url,
+					relay_chain_rpc_urls: cli.run.base.relay_chain_rpc_urls,
 					tracing_raw_max_memory_usage: cli.run.tracing_raw_max_memory_usage,
 				};
 
@@ -724,9 +735,9 @@ pub fn run() -> Result<()> {
 				// 1. by providing the --dev-service flag to the CLI
 				// 2. by specifying "dev-service" in the chain spec's "relay-chain" field.
 				// NOTE: the --dev flag triggers the dev service by way of number 2
-				let relay_chain_id = extension.map(|e| e.relay_chain.clone());
+				let relay_chain_id = extension.map(|e| e.relay_chain.as_str());
 				let dev_service =
-					config.chain_spec.is_dev() || relay_chain_id == Some("dev-service".to_string());
+					config.chain_spec.is_dev() || relay_chain_id == Some("dev-service");
 
 				if dev_service {
 					// When running the dev service, just use Alice's author inherent
@@ -739,21 +750,21 @@ pub fn run() -> Result<()> {
 
 					return match &config.chain_spec {
 						#[cfg(feature = "moonriver-native")]
-						spec if spec.is_moonriver() => service::new_dev::<
-							service::moonriver_runtime::RuntimeApi,
-							service::MoonriverExecutor,
+						spec if spec.is_moonriver() => moonbeam_service::new_dev::<
+							moonbeam_service::moonriver_runtime::RuntimeApi,
+							moonbeam_service::MoonriverExecutor,
 						>(config, author_id, cli.run.sealing, rpc_config, hwbench)
 						.map_err(Into::into),
 						#[cfg(feature = "moonbeam-native")]
-						spec if spec.is_moonbeam() => service::new_dev::<
-							service::moonbeam_runtime::RuntimeApi,
-							service::MoonbeamExecutor,
+						spec if spec.is_moonbeam() => moonbeam_service::new_dev::<
+							moonbeam_service::moonbeam_runtime::RuntimeApi,
+							moonbeam_service::MoonbeamExecutor,
 						>(config, author_id, cli.run.sealing, rpc_config, hwbench)
 						.map_err(Into::into),
 						#[cfg(feature = "moonbase-native")]
-						_ => service::new_dev::<
-							service::moonbase_runtime::RuntimeApi,
-							service::MoonbaseExecutor,
+						_ => moonbeam_service::new_dev::<
+							moonbeam_service::moonbase_runtime::RuntimeApi,
+							moonbeam_service::MoonbaseExecutor,
 						>(config, author_id, cli.run.sealing, rpc_config, hwbench)
 						.map_err(Into::into),
 						#[cfg(not(feature = "moonbase-native"))]
@@ -777,19 +788,19 @@ pub fn run() -> Result<()> {
 				let genesis_state = match &config.chain_spec {
 					#[cfg(feature = "moonriver-native")]
 					spec if spec.is_moonriver() => {
-						let block: service::moonriver_runtime::Block =
+						let block: moonbeam_service::moonriver_runtime::Block =
 							generate_genesis_block(&**spec, state_version)?;
 						format!("0x{:?}", HexDisplay::from(&block.header().encode()))
 					}
 					#[cfg(feature = "moonbeam-native")]
 					spec if spec.is_moonbeam() => {
-						let block: service::moonbeam_runtime::Block =
+						let block: moonbeam_service::moonbeam_runtime::Block =
 							generate_genesis_block(&**spec, state_version)?;
 						format!("0x{:?}", HexDisplay::from(&block.header().encode()))
 					}
 					#[cfg(feature = "moonbase-native")]
 					_ => {
-						let block: service::moonbase_runtime::Block =
+						let block: moonbeam_service::moonbase_runtime::Block =
 							generate_genesis_block(&*config.chain_spec, state_version)?;
 						format!("0x{:?}", HexDisplay::from(&block.header().encode()))
 					}
@@ -805,28 +816,44 @@ pub fn run() -> Result<()> {
 				info!("Parachain id: {:?}", id);
 				info!("Parachain Account: {}", parachain_account);
 				info!("Parachain genesis state: {}", genesis_state);
+				info!(
+					"Is collating: {}",
+					if config.role.is_authority() {
+						"yes"
+					} else {
+						"no"
+					}
+				);
+
+				if !rpc_config.relay_chain_rpc_urls.is_empty() && cli.relaychain_args.len() > 0 {
+					warn!(
+						"Detected relay chain node arguments together with \
+					--relay-chain-rpc-url. This command starts a minimal Polkadot node that only \
+					uses a network-related subset of all relay chain CLI options."
+					);
+				}
 
 				match &config.chain_spec {
 					#[cfg(feature = "moonriver-native")]
-					spec if spec.is_moonriver() => service::start_node::<
-						service::moonriver_runtime::RuntimeApi,
-						service::MoonriverExecutor,
+					spec if spec.is_moonriver() => moonbeam_service::start_node::<
+						moonbeam_service::moonriver_runtime::RuntimeApi,
+						moonbeam_service::MoonriverExecutor,
 					>(config, polkadot_config, id, rpc_config, hwbench)
 					.await
 					.map(|r| r.0)
 					.map_err(Into::into),
 					#[cfg(feature = "moonbeam-native")]
-					spec if spec.is_moonbeam() => service::start_node::<
-						service::moonbeam_runtime::RuntimeApi,
-						service::MoonbeamExecutor,
+					spec if spec.is_moonbeam() => moonbeam_service::start_node::<
+						moonbeam_service::moonbeam_runtime::RuntimeApi,
+						moonbeam_service::MoonbeamExecutor,
 					>(config, polkadot_config, id, rpc_config, hwbench)
 					.await
 					.map(|r| r.0)
 					.map_err(Into::into),
 					#[cfg(feature = "moonbase-native")]
-					_ => service::start_node::<
-						service::moonbase_runtime::RuntimeApi,
-						service::MoonbaseExecutor,
+					_ => moonbeam_service::start_node::<
+						moonbeam_service::moonbase_runtime::RuntimeApi,
+						moonbeam_service::MoonbaseExecutor,
 					>(config, polkadot_config, id, rpc_config, hwbench)
 					.await
 					.map(|r| r.0)
@@ -877,7 +904,7 @@ impl CliConfiguration<Self> for RelayChainCli {
 	fn base_path(&self) -> Result<Option<BasePath>> {
 		Ok(self
 			.shared_params()
-			.base_path()
+			.base_path()?
 			.or_else(|| self.base_path.clone().map(Into::into)))
 	}
 
@@ -930,12 +957,8 @@ impl CliConfiguration<Self> for RelayChainCli {
 		self.base.base.role(is_dev)
 	}
 
-	fn transaction_pool(&self) -> Result<sc_service::config::TransactionPoolOptions> {
-		self.base.base.transaction_pool()
-	}
-
-	fn state_cache_child_ratio(&self) -> Result<Option<usize>> {
-		self.base.base.state_cache_child_ratio()
+	fn transaction_pool(&self, is_dev: bool) -> Result<sc_service::config::TransactionPoolOptions> {
+		self.base.base.transaction_pool(is_dev)
 	}
 
 	fn rpc_methods(&self) -> Result<sc_service::config::RpcMethods> {

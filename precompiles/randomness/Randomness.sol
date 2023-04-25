@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 pragma solidity >=0.8.3;
 
+/// @dev The Randomness contract's address.
+address constant RANDOMNESS_ADDRESS = 0x0000000000000000000000000000000000000809;
+
+/// @dev The Randomness contract's instance.
+Randomness constant RANDOMNESS_CONTRACT = Randomness(RANDOMNESS_ADDRESS);
+
 /// @dev Maximum number of random words being requested
 uint32 constant MAX_RANDOM_WORDS = 100;
 /// @dev Minimum number of blocks before a request can be fulfilled for Local VRF Request
@@ -46,7 +52,7 @@ interface Randomness {
     /// @param contractAddress The address of the contract being called back during fulfillment
     /// @param fee The amount to set aside to pay for the fulfillment
     /// @param gasLimit The gas limit to use for the fulfillment
-    /// @param salt A string being mixed with the randomness seed to obtain different random words
+    /// @param salt A string being mixed with the randomness seed to obtain different random words. This should be as unique as possible; using the same salt will lead to same randomness result.
     /// @param numWords The number of random words requested (from 1 to MAX_RANDOM_WORDS)
     /// @param randomnessSource The type of randomness source used to generate the random words
     /// @param fulfillmentBlock The parachain block number at which the request can be fulfilled (for LocalVRF only)

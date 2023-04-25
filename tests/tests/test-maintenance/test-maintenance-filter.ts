@@ -11,6 +11,7 @@ import { execTechnicalCommitteeProposal } from "../../util/governance";
 import { customWeb3Request } from "../../util/providers";
 import { describeDevMoonbeam } from "../../util/setup-dev-tests";
 import { createTransfer } from "../../util/transactions";
+import type { PalletAssetsAssetAccount, PalletAssetsAssetDetails } from "@polkadot/types/lookup";
 
 const ARBITRARY_ASSET_ID = 42259045809535163221576417993425387648n;
 const RELAYCHAIN_ARBITRARY_ADDRESS_1: string =
@@ -46,7 +47,7 @@ describeDevMoonbeam("Maintenance Mode - Filter", (context) => {
           "0x0",
           100n * GLMR,
           12_000_000n,
-          1_000_000_000n,
+          10_000_000_000n,
           "0",
           undefined,
           []
@@ -85,14 +86,20 @@ describeDevMoonbeam("Maintenance Mode - Filter", (context) => {
 
   it("should forbid assets transfer", async () => {
     const balance = context.polkadotApi.createType("Balance", 100000000000000);
-    const assetBalance = context.polkadotApi.createType("PalletAssetsAssetAccount", {
-      balance: balance,
-    });
+    const assetBalance: PalletAssetsAssetAccount = context.polkadotApi.createType(
+      "PalletAssetsAssetAccount",
+      {
+        balance: balance,
+      }
+    );
 
     const assetId = context.polkadotApi.createType("u128", ARBITRARY_ASSET_ID);
-    const assetDetails = context.polkadotApi.createType("PalletAssetsAssetDetails", {
-      supply: balance,
-    });
+    const assetDetails: PalletAssetsAssetDetails = context.polkadotApi.createType(
+      "PalletAssetsAssetDetails",
+      {
+        supply: balance,
+      }
+    );
 
     await mockAssetBalance(context, assetBalance, assetDetails, alith, assetId, alith.address);
 
@@ -112,17 +119,19 @@ describeDevMoonbeam("Maintenance Mode - Filter", (context) => {
               "SelfReserve", //enum
               100n * GLMR,
               {
-                V1: {
+                V3: {
                   parents: 1n,
                   interior: {
                     X2: [
                       { Parachain: 2000n },
-                      { AccountKey20: { network: "Any", key: hexToU8a(baltathar.address) } },
+                      { AccountKey20: { network: null, key: hexToU8a(baltathar.address) } },
                     ],
                   },
                 },
-              },
-              4000000000n
+              } as any,
+              {
+                Limited: { refTime: 4000000000, proofSize: 64 * 1024 },
+              }
             )
             .signAsync(baltathar)
         )
@@ -161,14 +170,20 @@ describeDevMoonbeam("Maintenance Mode - Filter", (context) => {
   let assetId: u128;
   before("registering asset", async function () {
     const balance = context.polkadotApi.createType("Balance", 100000000000000);
-    const assetBalance = context.polkadotApi.createType("PalletAssetsAssetAccount", {
-      balance: balance,
-    });
+    const assetBalance: PalletAssetsAssetAccount = context.polkadotApi.createType(
+      "PalletAssetsAssetAccount",
+      {
+        balance: balance,
+      }
+    );
 
     assetId = context.polkadotApi.createType("u128", ARBITRARY_ASSET_ID);
-    const assetDetails = context.polkadotApi.createType("PalletAssetsAssetDetails", {
-      supply: balance,
-    });
+    const assetDetails: PalletAssetsAssetDetails = context.polkadotApi.createType(
+      "PalletAssetsAssetDetails",
+      {
+        supply: balance,
+      }
+    );
 
     await mockAssetBalance(context, assetBalance, assetDetails, alith, assetId, baltathar.address);
 
@@ -232,7 +247,7 @@ describeDevMoonbeam("Maintenance Mode - Filter", (context) => {
       name: "FOREIGN",
       symbol: "FOREIGN",
       decimals: new BN(12),
-      isFrozen: false,
+      isFroze: false,
     };
 
     const sourceLocation = {

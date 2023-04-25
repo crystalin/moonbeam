@@ -5,10 +5,6 @@ import "../../../precompiles/relay-encoder/RelayEncoder.sol";
 
 // We only use this to be able to generate the input data, since we need a compiled instance
 contract RelayEncoderInstance is RelayEncoder {
-    /// The Relay Encoder wrapper at the known pre-compile address.
-    RelayEncoder public relayencoder =
-        RelayEncoder(0x0000000000000000000000000000000000000805);
-
     function encodeBond(
         uint256 controllerAddress,
         uint256 amount,
@@ -97,4 +93,37 @@ contract RelayEncoderInstance is RelayEncoder {
     {
         return "0x00";
     }
+
+    function encodeHrmpInitOpenChannel(uint32 recipient, uint32 maxCapacity, uint32 maxMessageSize)
+        external
+        pure
+        returns (bytes memory result)
+    {
+        return "0x00";
+    }
+
+    function encodeHrmpAcceptOpenChannel(uint32 sender)
+        external
+        pure
+        returns (bytes memory result)
+    {
+        return "0x00";
+    }
+
+     function encodeHrmpCloseChannel(uint32 sender, uint32 recipient)
+        external
+        pure
+        returns (bytes memory result)
+    {
+        return "0x00";
+    }
+
+    function encodeHrmpCancelOpenRequest(uint32 sender, uint32 recipient, uint32 openRequests) 
+        external 
+        pure 
+        returns (bytes memory result) 
+    {
+        return "0x00";
+    }
+
 }

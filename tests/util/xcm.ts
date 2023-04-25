@@ -8,8 +8,15 @@ import {
   XcmVersionedXcm,
 } from "@polkadot/types/lookup";
 import { XcmpMessageFormat } from "@polkadot/types/interfaces";
+import { PRECOMPILE_XCM_UTILS_ADDRESS } from "../util/constants";
+import { web3EthCall } from "../util/providers";
+import { getCompiled } from "../util/contracts";
 
 import { AssetMetadata } from "./assets";
+import { ethers } from "ethers";
+
+const XCM_UTILS_CONTRACT = getCompiled("precompiles/xcm-utils/XcmUtils");
+const XCM_UTILSTRANSACTOR_INTERFACE = new ethers.utils.Interface(XCM_UTILS_CONTRACT.contract.abi);
 
 // Creates and returns the tx that overrides the paraHRMP existence
 // This needs to be inserted at every block in which you are willing to test
@@ -148,6 +155,17 @@ export function descendOriginFromAddress(context: DevTestContext, address?: stri
     descendOriginAddress: u8aToHex(context.polkadotApi.registry.hash(toHash).slice(0, 20)),
   };
 }
+
+export function sovereignAccountOfSibling(context: DevTestContext, paraId: number): string {
+  return u8aToHex(
+    new Uint8Array([
+      ...new TextEncoder().encode("sibl"),
+      ...context.polkadotApi.createType("u32", paraId).toU8a(),
+      ...new Uint8Array(12),
+    ])
+  );
+}
+
 export interface RawXcmMessage {
   type: string;
   payload: any;
@@ -178,6 +196,15 @@ export async function injectHrmpMessage(
   await customWeb3Request(context.web3, "xcm_injectHrmpMessage", [paraId, totalMessage]);
 }
 
+// Weight a particular message using the xcm utils precompile
+export async function weightMessage(context: DevTestContext, message?: XcmVersionedXcm) {
+  const result = await web3EthCall(context.web3, {
+    to: PRECOMPILE_XCM_UTILS_ADDRESS,
+    data: XCM_UTILSTRANSACTOR_INTERFACE.encodeFunctionData("weightMessage", [message.toU8a()]),
+  });
+  return BigInt(result.result);
+}
+
 export async function injectHrmpMessageAndSeal(
   context: DevTestContext,
   paraId: number,
@@ -189,11 +216,14 @@ export async function injectHrmpMessageAndSeal(
 }
 
 interface XcmFragmentConfig {
-  fees: {
-    multilocation: any[];
+  assets: {
+    multilocation: {
+      parents: number;
+      interior: any;
+    };
     fungible: bigint;
-  };
-  weight_limit: BN;
+  }[];
+  weight_limit?: BN;
   descend_origin?: string;
   beneficiary?: string;
 }
@@ -210,12 +240,12 @@ export class XcmFragment {
   // Add a `ReserveAssetDeposited` instruction
   reserve_asset_deposited(): this {
     this.instructions.push({
-      ReserveAssetDeposited: this.config.fees.multilocation.map((multilocation) => {
+      ReserveAssetDeposited: this.config.assets.map(({ multilocation, fungible }) => {
         return {
           id: {
             Concrete: multilocation,
           },
-          fun: { Fungible: this.config.fees.fungible },
+          fun: { Fungible: fungible },
         };
       }, this),
     });
@@ -225,50 +255,57 @@ export class XcmFragment {
   // Add a `WithdrawAsset` instruction
   withdraw_asset(): this {
     this.instructions.push({
-      WithdrawAsset: this.config.fees.multilocation.map((multilocation) => {
+      WithdrawAsset: this.config.assets.map(({ multilocation, fungible }) => {
         return {
           id: {
             Concrete: multilocation,
           },
-          fun: { Fungible: this.config.fees.fungible },
+          fun: { Fungible: fungible },
         };
       }, this),
     });
     return this;
   }
 
-  // Add a `BuyExecution` instruction
-  buy_execution(multilocation_index: number = 0): this {
-    this.instructions.push({
-      BuyExecution: {
-        fees: {
-          id: {
-            Concrete: this.config.fees.multilocation[multilocation_index],
+  // Add one or more `BuyExecution` instruction
+  // if weight_limit is not set in config, then we put unlimited
+  buy_execution(fee_index: number = 0, repeat: bigint = 1n): this {
+    const weightLimit =
+      this.config.weight_limit != null
+        ? { Limited: this.config.weight_limit }
+        : { Unlimited: null };
+    for (var i = 0; i < repeat; i++) {
+      this.instructions.push({
+        BuyExecution: {
+          fees: {
+            id: {
+              Concrete: this.config.assets[fee_index].multilocation,
+            },
+            fun: { Fungible: this.config.assets[fee_index].fungible },
           },
-          fun: { Fungible: this.config.fees.fungible },
+          weightLimit: weightLimit,
         },
-        weightLimit: { Limited: this.config.weight_limit },
-      },
-    });
+      });
+    }
     return this;
   }
 
   // Add a `ClaimAsset` instruction
-  claim_asset(): this {
+  claim_asset(index: number = 0): this {
     this.instructions.push({
       ClaimAsset: {
         assets: [
           {
             id: {
-              Concrete: this.config.fees.multilocation[0],
+              Concrete: this.config.assets[index].multilocation,
             },
-            fun: { Fungible: this.config.fees.fungible },
+            fun: { Fungible: this.config.assets[index].fungible },
           },
         ],
         // Ticket seems to indicate the version of the assets
         ticket: {
           parents: 0,
-          interior: { X1: { GeneralIndex: 2 } },
+          interior: { X1: { GeneralIndex: 3 } },
         },
       },
     });
@@ -372,5 +409,29 @@ export class XcmFragment {
     return {
       V2: this.instructions,
     };
+  }
+
+  // Overrides the weight limit of the first buyExeuction encountered
+  // with the measured weight
+  async override_weight(context: DevTestContext): Promise<this> {
+    const message: XcmVersionedXcm = context.polkadotApi.createType(
+      "XcmVersionedXcm",
+      this.as_v2()
+    ) as any;
+
+    const instructions = message.asV2;
+    for (var i = 0; i < instructions.length; i++) {
+      if (instructions[i].isBuyExecution == true) {
+        let newWeight = await weightMessage(context, message);
+        this.instructions[i] = {
+          BuyExecution: {
+            fees: instructions[i].asBuyExecution.fees,
+            weightLimit: { Limited: newWeight },
+          },
+        };
+        break;
+      }
+    }
+    return this;
   }
 }

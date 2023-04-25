@@ -3,32 +3,33 @@ import { ApiDecoration } from "@polkadot/api/types";
 import { AccountId20 } from "@polkadot/types/interfaces/runtime";
 import { StorageKey, Option } from "@polkadot/types";
 import type {
-  ParachainStakingDelegator,
-  ParachainStakingDelegations,
-  ParachainStakingCandidateMetadata,
-  ParachainStakingBond,
-  ParachainStakingSetOrderedSetBond,
+  PalletParachainStakingDelegator,
+  PalletParachainStakingDelegations,
+  PalletParachainStakingCandidateMetadata,
+  PalletParachainStakingBond,
+  PalletParachainStakingSetOrderedSet,
 } from "@polkadot/types/lookup";
 import { expect } from "chai";
 import { describeSmokeSuite } from "../util/setup-smoke-tests";
 const debug = require("debug")("smoke:staking");
+const suiteNumber = "S1900";
 
-const wssUrl = process.env.WSS_URL || null;
-const relayWssUrl = process.env.RELAY_WSS_URL || null;
-
-describeSmokeSuite(`Verify staking consistency`, { wssUrl, relayWssUrl }, (context) => {
+describeSmokeSuite("S1900", `Verify staking consistency`, (context, testIt) => {
   let atBlockNumber: number = 0;
   let apiAt: ApiDecoration<"promise"> = null;
   let specVersion: number = 0;
   let maxTopDelegationsPerCandidate: number = 0;
-  let allCandidateInfo: [StorageKey<[AccountId20]>, Option<ParachainStakingCandidateMetadata>][];
-  let candidatePool: ParachainStakingSetOrderedSetBond;
-  let allDelegatorState: [StorageKey<[AccountId20]>, Option<ParachainStakingDelegator>][];
-  let allTopDelegations: [StorageKey<[AccountId20]>, Option<ParachainStakingDelegations>][];
+  let allCandidateInfo: [
+    StorageKey<[AccountId20]>,
+    Option<PalletParachainStakingCandidateMetadata>
+  ][];
+  let candidatePool: PalletParachainStakingSetOrderedSet;
+  let allDelegatorState: [StorageKey<[AccountId20]>, Option<PalletParachainStakingDelegator>][];
+  let allTopDelegations: [StorageKey<[AccountId20]>, Option<PalletParachainStakingDelegations>][];
   let delegatorsPerCandidates: {
     [index: string]: {
       delegator: string;
-      delegation: ParachainStakingBond;
+      delegation: PalletParachainStakingBond;
     }[];
   };
   let blocksPerRound: number;
@@ -69,7 +70,7 @@ describeSmokeSuite(`Verify staking consistency`, { wssUrl, relayWssUrl }, (conte
       {} as {
         [key: `0x${string}`]: {
           delegator: `0x${string}`;
-          delegation: ParachainStakingBond;
+          delegation: PalletParachainStakingBond;
         }[];
       }
     );
@@ -80,7 +81,7 @@ describeSmokeSuite(`Verify staking consistency`, { wssUrl, relayWssUrl }, (conte
     allSelectedCandidates = await apiAt.query.parachainStaking.selectedCandidates();
   });
 
-  it("candidate totalCounted matches top X delegations", async function () {
+  testIt("C100", `candidate totalCounted matches top X delegations`, async function () {
     for (const candidate of allCandidateInfo) {
       const accountId = `0x${candidate[0].toHex().slice(-40)}`;
       const delegators = delegatorsPerCandidates[accountId] || [];
@@ -104,7 +105,7 @@ describeSmokeSuite(`Verify staking consistency`, { wssUrl, relayWssUrl }, (conte
     );
   });
 
-  it("candidate topDelegator total matches the sum", async function () {
+  testIt("C200", `candidate topDelegator total matches the sum`, async function () {
     for (const topDelegation of allTopDelegations) {
       expect(
         topDelegation[1].unwrap().total.toBigInt(),
@@ -117,19 +118,23 @@ describeSmokeSuite(`Verify staking consistency`, { wssUrl, relayWssUrl }, (conte
     }
   });
 
-  it("candidate topDelegator total matches candidate totalCounted - bond", async function () {
-    for (const candidate of allCandidateInfo) {
-      const accountId = `0x${candidate[0].toHex().slice(-40)}`;
-      const topDelegation = allTopDelegations
-        .find((t) => `0x${t[0].toHex().slice(-40)}` == accountId)[1]
-        .unwrap();
-      expect(topDelegation.total.toBigInt()).to.equal(
-        candidate[1].unwrap().totalCounted.toBigInt() - candidate[1].unwrap().bond.toBigInt()
-      );
+  testIt(
+    "C300",
+    `candidate topDelegator total matches candidate totalCounted - bond`,
+    async function () {
+      for (const candidate of allCandidateInfo) {
+        const accountId = `0x${candidate[0].toHex().slice(-40)}`;
+        const topDelegation = allTopDelegations
+          .find((t) => `0x${t[0].toHex().slice(-40)}` == accountId)[1]
+          .unwrap();
+        expect(topDelegation.total.toBigInt()).to.equal(
+          candidate[1].unwrap().totalCounted.toBigInt() - candidate[1].unwrap().bond.toBigInt()
+        );
+      }
     }
-  });
+  );
 
-  it("candidate topDelegations matches top X delegators", async function () {
+  testIt("C400", `candidate topDelegations matches top X delegators`, async function () {
     for (const candidate of allCandidateInfo) {
       const accountId = `0x${candidate[0].toHex().slice(-40)}`;
       const delegators = delegatorsPerCandidates[accountId] || [];
@@ -175,7 +180,7 @@ describeSmokeSuite(`Verify staking consistency`, { wssUrl, relayWssUrl }, (conte
     );
   });
 
-  it("all delegators lessTotal matches revoke/decrease requests", async function () {
+  testIt("C500", `all delegators lessTotal matches revoke/decrease requests`, async function () {
     let checks = 0;
     if (specVersion >= 1500) {
       const delegationScheduledRequests =
@@ -225,7 +230,7 @@ describeSmokeSuite(`Verify staking consistency`, { wssUrl, relayWssUrl }, (conte
     debug(`Verified ${checks} lessTotal (runtime: ${specVersion})`);
   });
 
-  it("candidatePool matches candidateInfo", async function () {
+  testIt("C600", `candidatePool matches candidateInfo`, async function () {
     let foundCandidateInPool = 0;
     for (const candidate of allCandidateInfo) {
       const candidateId = `0x${candidate[0].toHex().slice(-40)}`;
@@ -256,35 +261,40 @@ describeSmokeSuite(`Verify staking consistency`, { wssUrl, relayWssUrl }, (conte
     );
   });
 
-  it("round length is more than minimum selected candidate count", async function () {
+  testIt("C700", `round length is more than minimum selected candidate count`, async function () {
     expect(
       blocksPerRound,
       `blocks per round should be equal or more than the minimum selected candidate count`
     ).to.be.greaterThanOrEqual(minSelectedCandidates);
   });
 
-  it("total selected is more than minimum selected candidate count", async function () {
+  testIt("C800", `total selected is more than minimum selected candidate count`, async function () {
     expect(
       totalSelectedCandidates,
       `blocks per round should be equal or more than the minimum selected candidate count`
     ).to.be.greaterThanOrEqual(minSelectedCandidates);
   });
 
-  it.skip("current selected candidates are more than minimum required", async function () {
+  testIt("C900", `current selected candidates are more than minimum required`, async function () {
+    this.skip();
     expect(
       allSelectedCandidates.length,
       `selected candidate count was less than the minimum allowed of ${minSelectedCandidates}`
     ).to.be.greaterThanOrEqual(minSelectedCandidates);
   });
 
-  it("current selected candidates are less than or equal to stored total", async function () {
-    expect(
-      allSelectedCandidates.length,
-      `selected candidate count was less than the minimum allowed of ${minSelectedCandidates}`
-    ).to.be.lessThanOrEqual(totalSelectedCandidates);
-  });
+  testIt(
+    "C1000",
+    `current selected candidates are less than or equal to stored total`,
+    async function () {
+      expect(
+        allSelectedCandidates.length,
+        `selected candidate count was less than the minimum allowed of ${minSelectedCandidates}`
+      ).to.be.lessThanOrEqual(totalSelectedCandidates);
+    }
+  );
 
-  it("round length is more than current selected candidates", async function () {
+  testIt("C1100", `round length is more than current selected candidates`, async function () {
     expect(
       blocksPerRound,
       `blocks per round should be equal or more than the current selected candidates`

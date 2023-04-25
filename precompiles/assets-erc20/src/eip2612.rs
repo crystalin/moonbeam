@@ -119,15 +119,16 @@ where
 		+ pallet_evm::Config
 		+ frame_system::Config
 		+ pallet_timestamp::Config,
-	Runtime::Call: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
-	Runtime::Call: From<pallet_assets::Call<Runtime, Instance>>,
-	<Runtime::Call as Dispatchable>::Origin: From<Option<Runtime::AccountId>>,
-	BalanceOf<Runtime, Instance>: TryFrom<U256> + Into<U256> + EvmData,
+	Runtime::RuntimeCall: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
+	Runtime::RuntimeCall: From<pallet_assets::Call<Runtime, Instance>>,
+	<Runtime::RuntimeCall as Dispatchable>::RuntimeOrigin: From<Option<Runtime::AccountId>>,
+	BalanceOf<Runtime, Instance>: TryFrom<U256> + Into<U256> + solidity::Codec,
 	Runtime: AccountIdAssetIdConversion<Runtime::AccountId, AssetIdOf<Runtime, Instance>>,
-	<<Runtime as frame_system::Config>::Call as Dispatchable>::Origin: OriginTrait,
+	<<Runtime as frame_system::Config>::RuntimeCall as Dispatchable>::RuntimeOrigin: OriginTrait,
 	IsLocal: Get<bool>,
 	<Runtime as pallet_timestamp::Config>::Moment: Into<U256>,
 	AssetIdOf<Runtime, Instance>: Display,
+	Runtime::AccountId: Into<H160>,
 {
 	fn compute_domain_separator(address: H160, asset_id: AssetIdOf<Runtime, Instance>) -> [u8; 32] {
 		let asset_name = pallet_assets::Pallet::<Runtime, Instance>::name(asset_id);
@@ -144,13 +145,13 @@ where
 		let version: H256 = keccak256!("1").into();
 		let chain_id: U256 = Runtime::ChainId::get().into();
 
-		let domain_separator_inner = EvmDataWriter::new()
-			.write(H256::from(PERMIT_DOMAIN))
-			.write(name)
-			.write(version)
-			.write(chain_id)
-			.write(Address(address))
-			.build();
+		let domain_separator_inner = solidity::encode_arguments((
+			H256::from(PERMIT_DOMAIN),
+			name,
+			version,
+			chain_id,
+			Address(address),
+		));
 
 		keccak_256(&domain_separator_inner).into()
 	}
@@ -166,14 +167,14 @@ where
 	) -> [u8; 32] {
 		let domain_separator = Self::compute_domain_separator(address, asset_id);
 
-		let permit_content = EvmDataWriter::new()
-			.write(H256::from(PERMIT_TYPEHASH))
-			.write(Address(owner))
-			.write(Address(spender))
-			.write(value)
-			.write(nonce)
-			.write(deadline)
-			.build();
+		let permit_content = solidity::encode_arguments((
+			H256::from(PERMIT_TYPEHASH),
+			Address(owner),
+			Address(spender),
+			value,
+			nonce,
+			deadline,
+		));
 		let permit_content = keccak_256(&permit_content);
 
 		let mut pre_digest = Vec::with_capacity(2 + 32 + 32);
@@ -238,7 +239,7 @@ where
 			SELECTOR_LOG_APPROVAL,
 			owner,
 			spender,
-			EvmDataWriter::new().write(value).build(),
+			solidity::encode_event_data(value),
 		)
 		.record(handle)?;
 

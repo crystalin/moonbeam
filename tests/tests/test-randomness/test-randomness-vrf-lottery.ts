@@ -25,7 +25,7 @@ import {
   PRECOMPILE_RANDOMNESS_ADDRESS,
 } from "../../util/constants";
 import { getCompiled } from "../../util/contracts";
-import { expectEVMResult } from "../../util/eth-transactions";
+import { expectEVMResult, extractRevertReason } from "../../util/eth-transactions";
 import { describeDevMoonbeam, DevTestContext } from "../../util/setup-dev-tests";
 import {
   ALITH_TRANSACTION_TEMPLATE,
@@ -36,7 +36,7 @@ import {
 
 const LOTTERY_CONTRACT_JSON = getCompiled("RandomnessLotteryDemo");
 const LOTTERY_INTERFACE = new ethers.utils.Interface(LOTTERY_CONTRACT_JSON.contract.abi);
-const RANDOMNESS_CONTRACT_JSON = getCompiled("Randomness");
+const RANDOMNESS_CONTRACT_JSON = getCompiled("precompiles/randomness/Randomness");
 const RANDOMNESS_INTERFACE = new ethers.utils.Interface(RANDOMNESS_CONTRACT_JSON.contract.abi);
 
 const RANDOMNESS_SOURCE_LOCAL_VRF = "0";
@@ -141,6 +141,12 @@ describeDevMoonbeam("Randomness VRF - Lottery Demo", (context) => {
       })
     );
     expectEVMResult(result.events, "Revert");
+
+    const revertReason = await extractRevertReason(result.hash, context.ethers);
+    // Full error expected:
+    // Module(ModuleError { index: 39, error: [7, 0, 0, 0],
+    // message: Some("RequestCannotYetBeFulfilled") })
+    expect(revertReason).to.contain("RequestCannotYetBeFulfilled");
   });
 
   it("should be rolling the numbers", async function () {
@@ -278,5 +284,69 @@ describeDevMoonbeam("Randomness VRF - Fulfilling Lottery Demo", (context) => {
 
   it("should be back to open for registrations", async function () {
     expect(await lotteryContract.methods.status().call()).to.equal("0");
+  });
+});
+
+describeDevMoonbeam("Randomness VRF - Static fulfilling Lottery Demo", (context) => {
+  let lotteryContract: Contract;
+  let randomnessContract: Contract;
+  let fulFillReceipt: TransactionReceipt;
+  let lotteryContractStatus;
+  before("setup lottery contract", async function () {
+    lotteryContract = await setupLotteryWithParticipants(context);
+    randomnessContract = new context.web3.eth.Contract(
+      RANDOMNESS_CONTRACT_JSON.contract.abi,
+      PRECOMPILE_RANDOMNESS_ADDRESS
+    );
+    await context.createBlock(
+      createTransaction(context, {
+        ...ALITH_TRANSACTION_TEMPLATE,
+        to: lotteryContract.options.address,
+        data: LOTTERY_INTERFACE.encodeFunctionData("startLottery", []),
+        value: Web3.utils.toWei("4", "ether"),
+      })
+    );
+
+    lotteryContractStatus = await lotteryContract.methods.status().call();
+    expect(lotteryContractStatus).to.equal("1");
+
+    await context.createBlock();
+    await context.createBlock();
+    const { contract, rawTx } = await createContract(
+      context,
+      "StaticSubcall",
+      {
+        ...ALITH_TRANSACTION_TEMPLATE,
+        value: Web3.utils.toWei("0", "ether"),
+        gas: 5_000_000,
+      },
+      []
+    );
+    await context.createBlock(rawTx);
+
+    const STATIC_SUBCALL_CONTRACT_JSON = getCompiled("StaticSubcall");
+    const STATIC_SUBCALL_INTERFACE = new ethers.utils.Interface(
+      STATIC_SUBCALL_CONTRACT_JSON.contract.abi
+    );
+
+    const {
+      result: { hash },
+    } = await context.createBlock(
+      createTransaction(context, {
+        ...ALITH_TRANSACTION_TEMPLATE,
+        to: contract.options.address,
+        data: STATIC_SUBCALL_INTERFACE.encodeFunctionData("staticFulfill", [0]),
+      })
+    );
+
+    fulFillReceipt = await context.web3.eth.getTransactionReceipt(hash);
+  });
+  it("lottery contract status did not change", async function () {
+    // static subcall had no effect on state
+    expect(await lotteryContract.methods.status().call()).to.equal(lotteryContractStatus);
+  });
+
+  it("should have no event", async function () {
+    expect(fulFillReceipt.logs.length).to.equal(0);
   });
 });

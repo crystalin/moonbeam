@@ -12,6 +12,7 @@ import {
   injectHrmpMessageAndSeal,
   RawXcmMessage,
   XcmFragment,
+  weightMessage,
 } from "../../util/xcm";
 import { customWeb3Request } from "../../util/providers";
 
@@ -117,15 +118,15 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
     // Parachain(Statemint parachain)
     // GeneralIndex(assetId being transferred)
     const xcmMessage = new XcmFragment({
-      fees: {
-        multilocation: [
-          {
+      assets: [
+        {
+          multilocation: {
             parents: 1,
             interior: { X2: [{ Parachain: statemint_para_id }, { GeneralIndex: 0 }] },
           },
-        ],
-        fungible: 10000000000000n,
-      },
+          fungible: 10000000000000n,
+        },
+      ],
       weight_limit: new BN(4000000000),
       beneficiary: alith.address,
     })
@@ -178,9 +179,9 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
     // PalletInstance(Statemint assets pallet instance)
     // GeneralIndex(assetId being transferred)
     const xcmMessage = new XcmFragment({
-      fees: {
-        multilocation: [
-          {
+      assets: [
+        {
+          multilocation: {
             parents: 1,
             interior: {
               X3: [
@@ -190,9 +191,9 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
               ],
             },
           },
-        ],
-        fungible: 10000000000000n,
-      },
+          fungible: 10000000000000n,
+        },
+      ],
       weight_limit: new BN(4000000000),
       beneficiary: alith.address,
     })
@@ -236,14 +237,14 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer of DEV", (context) =
     await context.createBlock(
       context.polkadotApi.tx.balances.transfer(sovereignAddress, transferredBalance)
     );
-    let balance = (
+    const balance = (
       (await context.polkadotApi.query.system.account(sovereignAddress)) as any
     ).data.free.toBigInt();
     expect(balance).to.eq(transferredBalance);
   });
 
   it("Should NOT receive MOVR from para Id 2000 with old reanchor", async function () {
-    let ownParaId = (await context.polkadotApi.query.parachainInfo.parachainId()) as any;
+    const ownParaId = (await context.polkadotApi.query.parachainInfo.parachainId()) as any;
     // Get Pallet balances index
     const metadata = await context.polkadotApi.rpc.state.getMetadata();
     const balancesPalletIndex = (metadata.asLatest.toHuman().pallets as Array<any>).find(
@@ -256,17 +257,17 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer of DEV", (context) =
     // We are charging 20 micro DEV for this operation
     // The rest should be going to the deposit account
     const xcmMessage = new XcmFragment({
-      fees: {
-        multilocation: [
-          {
+      assets: [
+        {
+          multilocation: {
             parents: 1,
             interior: {
               X2: [{ Parachain: ownParaId }, { PalletInstance: balancesPalletIndex }],
             },
           },
-        ],
-        fungible: transferredBalance,
-      },
+          fungible: transferredBalance,
+        },
+      ],
       weight_limit: new BN(4000000000),
       beneficiary: random.address,
     })
@@ -284,13 +285,13 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer of DEV", (context) =
 
     // The message should not have been succesfully executed, since old prefix is not supported
     // anymore
-    let balance = (
+    const balance = (
       (await context.polkadotApi.query.system.account(sovereignAddress)) as any
     ).data.free.toBigInt();
     expect(balance.toString()).to.eq(transferredBalance.toString());
 
     // the random address does not receive anything
-    let randomBalance = (
+    const randomBalance = (
       (await context.polkadotApi.query.system.account(random.address)) as any
     ).data.free.toBigInt();
     expect(randomBalance).to.eq(0n);
@@ -320,7 +321,7 @@ describeDevMoonbeam(
           context.polkadotApi.tx.balances.transfer(sovereignAddress, transferredBalance)
         )
       );
-      let balance = (
+      const balance = (
         (await context.polkadotApi.query.system.account(sovereignAddress)) as any
       ).data.free.toBigInt();
       expect(balance).to.eq(transferredBalance);
@@ -332,23 +333,20 @@ describeDevMoonbeam(
       const balancesPalletIndex = (metadata.asLatest.toHuman().pallets as Array<any>).find(
         (pallet) => pallet.name === "Balances"
       ).index;
-      // We are charging 100_000_000 weight for every XCM instruction
-      // We are executing 4 instructions
-      // 200_000_000 * 4 * 50000 = 40000000000000
-      // We are charging 40 micro DEV for this operation
+
       // The rest should be going to the deposit account
       const xcmMessage = new XcmFragment({
-        fees: {
-          multilocation: [
-            {
+        assets: [
+          {
+            multilocation: {
               parents: 0,
               interior: {
                 X1: { PalletInstance: balancesPalletIndex },
               },
             },
-          ],
-          fungible: transferredBalance,
-        },
+            fungible: transferredBalance,
+          },
+        ],
         weight_limit: new BN(8000000000),
         beneficiary: random.address,
       })
@@ -358,6 +356,14 @@ describeDevMoonbeam(
         .deposit_asset()
         .as_v2();
 
+      const chargedWeight = await weightMessage(
+        context,
+        context.polkadotApi.createType("XcmVersionedXcm", xcmMessage) as any
+      );
+      // We are charging chargedWeight
+      // chargedWeight * 50000 = chargedFee
+      const chargedFee = chargedWeight * 50000n;
+
       // Send an XCM and create block to execute it
       await injectHrmpMessageAndSeal(context, foreign_para_id, {
         type: "XcmVersionedXcm",
@@ -365,18 +371,18 @@ describeDevMoonbeam(
       } as RawXcmMessage);
 
       // We should expect sovereign balance to be 0, since we have transferred the full amount
-      let balance = (
+      const balance = (
         (await context.polkadotApi.query.system.account(sovereignAddress)) as any
       ).data.free.toBigInt();
       expect(balance.toString()).to.eq(0n.toString());
 
       // In the case of the random address: we have transferred 100000000000000,
-      // but 20000000000000 have been deducted
+      // but chargedFee have been deducted
       // for weight payment
-      let randomBalance = (
+      const randomBalance = (
         (await context.polkadotApi.query.system.account(random.address)) as any
       ).data.free.toBigInt();
-      let expectedRandomBalance = 60000000000000n;
+      const expectedRandomBalance = transferredBalance - chargedFee;
       expect(randomBalance).to.eq(expectedRandomBalance);
     });
   }
@@ -456,23 +462,26 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
     // We are charging 20 micro DEV for this operation
     // The rest should be going to the deposit account
     const xcmMessage = new XcmFragment({
-      fees: {
-        multilocation: [
-          {
+      assets: [
+        {
+          multilocation: {
             parents: 0,
             interior: {
               X1: { PalletInstance: balancesPalletIndex },
             },
           },
-          {
+          fungible: transferredBalance,
+        },
+        {
+          multilocation: {
             parents: 0,
             interior: {
               X2: [{ PalletInstance: localAssetsPalletIndex }, { GeneralIndex: assetId }],
             },
           },
-        ],
-        fungible: transferredBalance,
-      },
+          fungible: transferredBalance,
+        },
+      ],
       weight_limit: new BN(4000000000),
       beneficiary: alith.address,
     })
@@ -489,7 +498,7 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
     } as RawXcmMessage);
 
     // Make sure the state has ALITH's LOCAL parachain tokens
-    let alithLocalTokBalance = (
+    const alithLocalTokBalance = (
       (await context.polkadotApi.query.localAssets.account(assetId, alith.address)) as any
     )
       .unwrap()
@@ -529,9 +538,9 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
     // We are going to test that, using one of them as fee payment (assetOne),
     // we can receive the other
     const xcmMessage = new XcmFragment({
-      fees: {
-        multilocation: [
-          {
+      assets: [
+        {
+          multilocation: {
             parents: 1,
             interior: {
               X3: [
@@ -541,7 +550,10 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
               ],
             },
           },
-          {
+          fungible: 10000000000000n,
+        },
+        {
+          multilocation: {
             parents: 1,
             interior: {
               X3: [
@@ -551,9 +563,9 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
               ],
             },
           },
-        ],
-        fungible: 10000000000000n,
-      },
+          fungible: 10000000000000n,
+        },
+      ],
       weight_limit: new BN(4000000000),
       beneficiary: alith.address,
     })
@@ -570,7 +582,7 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
     } as RawXcmMessage);
 
     // Make sure the state has ALITH's foreign parachain tokens
-    let alithAssetZeroBalance = (
+    const alithAssetZeroBalance = (
       (await context.polkadotApi.query.assets.account(assetIdZero, alith.address)) as any
     )
       .unwrap()
@@ -639,7 +651,7 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
   });
 
   it("Should NOT receive 10 Local Assets and DEV for fee with old reanchor", async function () {
-    let ownParaId = (await context.polkadotApi.query.parachainInfo.parachainId()) as any;
+    const ownParaId = (await context.polkadotApi.query.parachainInfo.parachainId()) as any;
     const metadata = await context.polkadotApi.rpc.state.getMetadata();
     const balancesPalletIndex = (metadata.asLatest.toHuman().pallets as Array<any>).find(
       (pallet) => pallet.name === "Balances"
@@ -657,27 +669,26 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
     // We are charging 20 micro DEV for this operation
     // The rest should be going to the deposit account
     const xcmMessage = new XcmFragment({
-      fees: {
-        multilocation: [
-          {
+      assets: [
+        {
+          multilocation: {
             parents: 1,
             interior: {
               X2: [{ Parachain: ownParaId }, { PalletInstance: balancesPalletIndex }],
             },
           },
-          {
+          fungible: transferredBalance,
+        },
+        {
+          multilocation: {
             parents: 1,
             interior: {
-              X3: [
-                { Parachain: ownParaId },
-                { PalletInstance: localAssetsPalletIndex },
-                { GeneralIndex: assetId },
-              ],
+              X2: [{ Parachain: ownParaId }, { PalletInstance: balancesPalletIndex }],
             },
           },
-        ],
-        fungible: transferredBalance,
-      },
+          fungible: transferredBalance,
+        },
+      ],
       weight_limit: new BN(4000000000),
       beneficiary: baltathar.address,
     })
@@ -694,7 +705,7 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
     } as RawXcmMessage);
 
     // Old reanchor does not work anymore so no reception of tokens
-    let baltatharLocalTokBalance = (await context.polkadotApi.query.localAssets.account(
+    const baltatharLocalTokBalance = (await context.polkadotApi.query.localAssets.account(
       assetId,
       baltathar.address
     )) as any;
@@ -721,15 +732,15 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
     // We are going to test that, using one of them as fee payment (assetOne),
     // we can receive the other
     const xcmMessage = new XcmFragment({
-      fees: {
-        multilocation: [
-          {
+      assets: [
+        {
+          multilocation: {
             parents: 1,
             interior: { X2: [{ Parachain: statemint_para_id }, { GeneralIndex: 0 }] },
           },
-        ],
-        fungible: 10000000000000n,
-      },
+          fungible: 10000000000000n,
+        },
+      ],
       weight_limit: new BN(4000000000),
       beneficiary: alith.address,
     })
@@ -746,7 +757,7 @@ describeDevMoonbeam("Mock XCM - receive horizontal transfer", (context) => {
     } as RawXcmMessage);
 
     // Make sure the state has ALITH's foreign parachain tokens
-    let alithAssetZeroBalance = (await context.polkadotApi.query.assets.account(
+    const alithAssetZeroBalance = (await context.polkadotApi.query.assets.account(
       assetId,
       alith.address
     )) as any;

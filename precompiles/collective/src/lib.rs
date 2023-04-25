@@ -22,13 +22,15 @@ use core::marker::PhantomData;
 use fp_evm::Log;
 use frame_support::{
 	dispatch::Dispatchable,
+	dispatch::{GetDispatchInfo, Pays, PostDispatchInfo},
 	sp_runtime::traits::Hash,
 	traits::ConstU32,
-	weights::{GetDispatchInfo, Pays, PostDispatchInfo},
+	weights::Weight,
 };
 use pallet_evm::AddressMapping;
+use parity_scale_codec::DecodeLimit as _;
 use precompile_utils::prelude::*;
-use sp_core::{Decode, H160, H256};
+use sp_core::{Decode, Get, H160, H256};
 use sp_std::{boxed::Box, vec::Vec};
 
 #[cfg(test)]
@@ -63,9 +65,9 @@ pub fn log_proposed(
 		address.into(),
 		SELECTOR_LOG_PROPOSED,
 		who.into(),
-		H256::from_slice(&EvmDataWriter::new().write(index).build()),
+		H256::from_slice(&solidity::encode_arguments(index)),
 		hash,
-		EvmDataWriter::new().write(threshold).build(),
+		solidity::encode_arguments(threshold),
 	)
 }
 
@@ -75,7 +77,7 @@ pub fn log_voted(address: impl Into<H160>, who: impl Into<H160>, hash: H256, vot
 		SELECTOR_LOG_VOTED,
 		who.into(),
 		hash,
-		EvmDataWriter::new().write(voted).build(),
+		solidity::encode_arguments(voted),
 	)
 }
 
@@ -84,6 +86,7 @@ pub fn log_closed(address: impl Into<H160>, hash: H256) -> Log {
 }
 
 type GetProposalLimit = ConstU32<{ 2u32.pow(16) }>;
+type DecodeLimit = ConstU32<8>;
 
 pub struct CollectivePrecompile<Runtime, Instance: 'static>(PhantomData<(Runtime, Instance)>);
 
@@ -92,10 +95,10 @@ impl<Runtime, Instance> CollectivePrecompile<Runtime, Instance>
 where
 	Instance: 'static,
 	Runtime: pallet_collective::Config<Instance> + pallet_evm::Config,
-	Runtime::Call: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo + Decode,
-	Runtime::Call: From<pallet_collective::Call<Runtime, Instance>>,
-	<Runtime as pallet_collective::Config<Instance>>::Proposal: From<Runtime::Call>,
-	<Runtime::Call as Dispatchable>::Origin: From<Option<Runtime::AccountId>>,
+	Runtime::RuntimeCall: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo + Decode,
+	Runtime::RuntimeCall: From<pallet_collective::Call<Runtime, Instance>>,
+	<Runtime as pallet_collective::Config<Instance>>::Proposal: From<Runtime::RuntimeCall>,
+	<Runtime::RuntimeCall as Dispatchable>::RuntimeOrigin: From<Option<Runtime::AccountId>>,
 	Runtime::AccountId: Into<H160>,
 	H256: From<<Runtime as frame_system::Config>::Hash>
 		+ Into<<Runtime as frame_system::Config>::Hash>,
@@ -107,15 +110,22 @@ where
 	) -> EvmResult {
 		let proposal: Vec<_> = proposal.into();
 		let proposal_hash: H256 = hash::<Runtime>(&proposal);
+
+		let log = log_executed(handle.context().address, proposal_hash);
+		handle.record_log_costs(&[&log])?;
+
 		let proposal_length: u32 = proposal.len().try_into().map_err(|_| {
 			RevertReason::value_is_too_large("uint32")
 				.in_field("length")
 				.in_field("proposal")
 		})?;
 
-		let proposal = Runtime::Call::decode(&mut &*proposal)
-			.map_err(|_| RevertReason::custom("Failed to decode proposal").in_field("proposal"))?
-			.into();
+		let proposal =
+			Runtime::RuntimeCall::decode_with_depth_limit(DecodeLimit::get(), &mut &*proposal)
+				.map_err(|_| {
+					RevertReason::custom("Failed to decode proposal").in_field("proposal")
+				})?
+				.into();
 		let proposal = Box::new(proposal);
 
 		let origin = Runtime::AddressMapping::into_account_id(handle.context().caller);
@@ -128,9 +138,6 @@ where
 			},
 		)?;
 
-		let log = log_executed(handle.context().address, proposal_hash);
-
-		handle.record_log_costs(&[&log])?;
 		log.record(handle)?;
 
 		Ok(())
@@ -153,23 +160,6 @@ where
 
 		let proposal_index = pallet_collective::Pallet::<Runtime, Instance>::proposal_count();
 		let proposal_hash: H256 = hash::<Runtime>(&proposal);
-		let proposal = Runtime::Call::decode(&mut &*proposal)
-			.map_err(|_| RevertReason::custom("Failed to decode proposal").in_field("proposal"))?
-			.into();
-		let proposal = Box::new(proposal);
-
-		{
-			let origin = Runtime::AddressMapping::into_account_id(handle.context().caller);
-			RuntimeHelper::<Runtime>::try_dispatch(
-				handle,
-				Some(origin).into(),
-				pallet_collective::Call::<Runtime, Instance>::propose {
-					threshold,
-					proposal,
-					length_bound: proposal_length,
-				},
-			)?;
-		}
 
 		// In pallet_collective a threshold < 2 means the proposal has been
 		// executed directly.
@@ -186,6 +176,28 @@ where
 		};
 
 		handle.record_log_costs(&[&log])?;
+
+		let proposal =
+			Runtime::RuntimeCall::decode_with_depth_limit(DecodeLimit::get(), &mut &*proposal)
+				.map_err(|_| {
+					RevertReason::custom("Failed to decode proposal").in_field("proposal")
+				})?
+				.into();
+		let proposal = Box::new(proposal);
+
+		{
+			let origin = Runtime::AddressMapping::into_account_id(handle.context().caller);
+			RuntimeHelper::<Runtime>::try_dispatch(
+				handle,
+				Some(origin).into(),
+				pallet_collective::Call::<Runtime, Instance>::propose {
+					threshold,
+					proposal,
+					length_bound: proposal_length,
+				},
+			)?;
+		}
+
 		log.record(handle)?;
 
 		Ok(proposal_index)
@@ -198,6 +210,16 @@ where
 		proposal_index: u32,
 		approve: bool,
 	) -> EvmResult {
+		// TODO: Since we cannot access ayes/nays of a proposal we cannot
+		// include it in the EVM events to mirror Substrate events.
+		let log = log_voted(
+			handle.context().address,
+			handle.context().caller,
+			proposal_hash,
+			approve,
+		);
+		handle.record_log_costs(&[&log])?;
+
 		let origin = Runtime::AddressMapping::into_account_id(handle.context().caller);
 		RuntimeHelper::<Runtime>::try_dispatch(
 			handle,
@@ -209,16 +231,6 @@ where
 			},
 		)?;
 
-		// TODO: Since we cannot access ayes/nays of a proposal we cannot
-		// include it in the EVM events to mirror Substrate events.
-
-		let log = log_voted(
-			handle.context().address,
-			handle.context().caller,
-			proposal_hash,
-			approve,
-		);
-		handle.record_log_costs(&[&log])?;
 		log.record(handle)?;
 
 		Ok(())
@@ -232,6 +244,10 @@ where
 		proposal_weight_bound: u64,
 		length_bound: u32,
 	) -> EvmResult<bool> {
+		// Because the actual log cannot be built before dispatch, we manually
+		// record it first (`executed` and `closed` have the same cost).
+		handle.record_log_costs_manual(2, 0)?;
+
 		let origin = Runtime::AddressMapping::into_account_id(handle.context().caller);
 		let post_dispatch_info = RuntimeHelper::<Runtime>::try_dispatch(
 			handle,
@@ -239,7 +255,10 @@ where
 			pallet_collective::Call::<Runtime, Instance>::close {
 				proposal_hash: proposal_hash.into(),
 				index: proposal_index,
-				proposal_weight_bound,
+				proposal_weight_bound: Weight::from_parts(
+					proposal_weight_bound,
+					xcm_primitives::DEFAULT_PROOF_SIZE,
+				),
 				length_bound,
 			},
 		)?;
@@ -250,7 +269,6 @@ where
 			Pays::Yes => (true, log_executed(handle.context().address, proposal_hash)),
 			Pays::No => (false, log_closed(handle.context().address, proposal_hash)),
 		};
-		handle.record_log_costs(&[&log])?;
 		log.record(handle)?;
 
 		Ok(executed)

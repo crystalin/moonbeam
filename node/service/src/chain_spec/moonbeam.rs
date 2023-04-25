@@ -30,10 +30,11 @@ use moonbeam_runtime::{
 	Balance, BalancesConfig, CouncilCollectiveConfig, CrowdloanRewardsConfig, DemocracyConfig,
 	EVMConfig, EthereumChainIdConfig, EthereumConfig, GenesisAccount, GenesisConfig, InflationInfo,
 	MaintenanceModeConfig, ParachainInfoConfig, ParachainStakingConfig, PolkadotXcmConfig,
-	Precompiles, Range, SystemConfig, TechCommitteeCollectiveConfig,
+	Precompiles, Range, SystemConfig, TechCommitteeCollectiveConfig, TransactionPaymentConfig,
 	TreasuryCouncilCollectiveConfig, HOURS, WASM_BINARY,
 };
 use nimbus_primitives::NimbusId;
+use pallet_transaction_payment::Multiplier;
 use sc_service::ChainType;
 #[cfg(test)]
 use sp_core::ecdsa;
@@ -69,7 +70,7 @@ pub fn development_chain_spec(mnemonic: Option<String>, num_accounts: Option<u32
 				vec![(
 					accounts[0],
 					get_from_seed::<NimbusId>("Alice"),
-					1_000 * GLMR * SUPPLY_FACTOR,
+					20_000 * GLMR * SUPPLY_FACTOR,
 				)],
 				// Delegations
 				vec![],
@@ -137,13 +138,13 @@ pub fn get_chain_spec(para_id: ParaId) -> ChainSpec {
 					(
 						AccountId::from(hex!("f24FF3a9CF04c71Dbc94D0b566f7A27B94566cac")),
 						get_from_seed::<NimbusId>("Alice"),
-						1_000 * GLMR * SUPPLY_FACTOR,
+						20_000 * GLMR * SUPPLY_FACTOR,
 					),
 					// Bob -> Baltathar
 					(
 						AccountId::from(hex!("3Cd0A705a2DC65e5b1E1205896BaA2be8A07c6e0")),
 						get_from_seed::<NimbusId>("Bob"),
-						1_000 * GLMR * SUPPLY_FACTOR,
+						20_000 * GLMR * SUPPLY_FACTOR,
 					),
 				],
 				// Delegations
@@ -186,6 +187,7 @@ pub fn get_chain_spec(para_id: ParaId) -> ChainSpec {
 const COLLATOR_COMMISSION: Perbill = Perbill::from_percent(20);
 const PARACHAIN_BOND_RESERVE_PERCENT: Percent = Percent::from_percent(30);
 const BLOCKS_PER_ROUND: u32 = 6 * HOURS;
+const NUM_SELECTED_CANDIDATES: u32 = 8;
 pub fn moonbeam_inflation_config() -> InflationInfo<Balance> {
 	fn to_round_inflation(annual: Range<Perbill>) -> Range<Perbill> {
 		use pallet_parachain_staking::inflation::{
@@ -220,7 +222,7 @@ pub fn testnet_genesis(
 	tech_comittee_members: Vec<AccountId>,
 	treasury_council_members: Vec<AccountId>,
 	candidates: Vec<(AccountId, NimbusId, Balance)>,
-	delegations: Vec<(AccountId, AccountId, Balance)>,
+	delegations: Vec<(AccountId, AccountId, Balance, Percent)>,
 	endowed_accounts: Vec<AccountId>,
 	crowdloan_fund_pot: Balance,
 	para_id: ParaId,
@@ -242,7 +244,7 @@ pub fn testnet_genesis(
 			balances: endowed_accounts
 				.iter()
 				.cloned()
-				.map(|k| (k, 1 << 80))
+				.map(|k| (k, 1 << 110))
 				.collect(),
 		},
 		crowdloan_rewards: CrowdloanRewardsConfig {
@@ -270,7 +272,6 @@ pub fn testnet_genesis(
 				.collect(),
 		},
 		ethereum: EthereumConfig {},
-		base_fee: Default::default(),
 		democracy: DemocracyConfig::default(),
 		parachain_staking: ParachainStakingConfig {
 			candidates: candidates
@@ -283,6 +284,7 @@ pub fn testnet_genesis(
 			collator_commission: COLLATOR_COMMISSION,
 			parachain_bond_reserve_percent: PARACHAIN_BOND_RESERVE_PERCENT,
 			blocks_per_round: BLOCKS_PER_ROUND,
+			num_selected_candidates: NUM_SELECTED_CANDIDATES,
 		},
 		council_collective: CouncilCollectiveConfig {
 			phantom: Default::default(),
@@ -314,6 +316,9 @@ pub fn testnet_genesis(
 		},
 		// This should initialize it to whatever we have set in the pallet
 		polkadot_xcm: PolkadotXcmConfig::default(),
+		transaction_payment: TransactionPaymentConfig {
+			multiplier: Multiplier::from(8u128),
+		},
 	}
 }
 

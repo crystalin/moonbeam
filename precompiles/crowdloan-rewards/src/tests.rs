@@ -15,25 +15,24 @@
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
 
 use crate::mock::{
-	events, roll_to,
-	Account::{Alice, Bob, Charlie, Precompile},
-	Call, Crowdloan, ExtBuilder, Origin, PCall, PrecompilesValue, Runtime, TestPrecompiles,
+	events, roll_to, AccountId, Crowdloan, ExtBuilder, PCall, Precompiles, PrecompilesValue,
+	Runtime, RuntimeCall, RuntimeOrigin,
 };
 use frame_support::{assert_ok, dispatch::Dispatchable};
 use pallet_crowdloan_rewards::{Call as CrowdloanCall, Event as CrowdloanEvent};
 use pallet_evm::Call as EvmCall;
-use precompile_utils::{prelude::*, solidity, testing::*};
+use precompile_utils::{prelude::*, testing::*};
 use sha3::{Digest, Keccak256};
-use sp_core::{H160, U256};
+use sp_core::U256;
 
-fn precompiles() -> TestPrecompiles<Runtime> {
+fn precompiles() -> Precompiles<Runtime> {
 	PrecompilesValue::get()
 }
 
 fn evm_call(input: Vec<u8>) -> EvmCall<Runtime> {
 	EvmCall::call {
 		source: Alice.into(),
-		target: Precompile.into(),
+		target: Precompile1.into(),
 		input,
 		value: U256::zero(), // No value sent in EVM
 		gas_limit: u64::max_value(),
@@ -53,11 +52,23 @@ fn selectors() {
 }
 
 #[test]
+fn modifiers() {
+	ExtBuilder::default().build().execute_with(|| {
+		let mut tester = PrecompilesModifierTester::new(precompiles(), Alice, Precompile1);
+
+		tester.test_view_modifier(PCall::is_contributor_selectors());
+		tester.test_view_modifier(PCall::reward_info_selectors());
+		tester.test_default_modifier(PCall::claim_selectors());
+		tester.test_default_modifier(PCall::update_reward_address_selectors());
+	});
+}
+
+#[test]
 fn selector_less_than_four_bytes() {
 	ExtBuilder::default().build().execute_with(|| {
 		// This selector is only three bytes long when four are required.
 		precompiles()
-			.prepare_test(Alice, Precompile, vec![1u8, 2u8, 3u8])
+			.prepare_test(Alice, Precompile1, vec![1u8, 2u8, 3u8])
 			.execute_reverts(|output| output == b"Tried to read selector out of bounds");
 	});
 }
@@ -66,7 +77,7 @@ fn selector_less_than_four_bytes() {
 fn no_selector_exists_but_length_is_right() {
 	ExtBuilder::default().build().execute_with(|| {
 		precompiles()
-			.prepare_test(Alice, Precompile, vec![1u8, 2u8, 3u8, 4u8])
+			.prepare_test(Alice, Precompile1, vec![1u8, 2u8, 3u8, 4u8])
 			.execute_reverts(|output| output == b"Unknown selector");
 	});
 }
@@ -80,14 +91,14 @@ fn is_contributor_returns_false() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
+					Precompile1,
 					PCall::is_contributor {
 						contributor: Address(Alice.into()),
 					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns_encoded(false);
+				.execute_returns(false);
 		});
 }
 
@@ -103,16 +114,18 @@ fn is_contributor_returns_true() {
 			roll_to(2);
 
 			let init_block = Crowdloan::init_vesting_block();
-			assert_ok!(Call::Crowdloan(CrowdloanCall::initialize_reward_vec {
-				rewards: vec![
-					([1u8; 32], Some(Alice.into()), 50u32.into()),
-					([2u8; 32], Some(Bob.into()), 50u32.into()),
-				]
-			})
-			.dispatch(Origin::root()));
+			assert_ok!(
+				RuntimeCall::Crowdloan(CrowdloanCall::initialize_reward_vec {
+					rewards: vec![
+						([1u8; 32], Some(Alice.into()), 50u32.into()),
+						([2u8; 32], Some(Bob.into()), 50u32.into()),
+					]
+				})
+				.dispatch(RuntimeOrigin::root())
+			);
 
 			assert_ok!(Crowdloan::complete_initialization(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				init_block + VESTING
 			));
 
@@ -120,14 +133,14 @@ fn is_contributor_returns_true() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
+					Precompile1,
 					PCall::is_contributor {
 						contributor: Address(Alice.into()),
 					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns_encoded(true);
+				.execute_returns(true);
 		});
 }
 
@@ -143,16 +156,18 @@ fn claim_works() {
 			roll_to(2);
 
 			let init_block = Crowdloan::init_vesting_block();
-			assert_ok!(Call::Crowdloan(CrowdloanCall::initialize_reward_vec {
-				rewards: vec![
-					([1u8; 32].into(), Some(Alice.into()), 50u32.into()),
-					([2u8; 32].into(), Some(Bob.into()), 50u32.into()),
-				]
-			})
-			.dispatch(Origin::root()));
+			assert_ok!(
+				RuntimeCall::Crowdloan(CrowdloanCall::initialize_reward_vec {
+					rewards: vec![
+						([1u8; 32].into(), Some(Alice.into()), 50u32.into()),
+						([2u8; 32].into(), Some(Bob.into()), 50u32.into()),
+					]
+				})
+				.dispatch(RuntimeOrigin::root())
+			);
 
 			assert_ok!(Crowdloan::complete_initialization(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				init_block + VESTING
 			));
 
@@ -161,9 +176,10 @@ fn claim_works() {
 			let input = PCall::claim {}.into();
 
 			// Make sure the call goes through successfully
-			assert_ok!(Call::Evm(evm_call(input)).dispatch(Origin::root()));
+			assert_ok!(RuntimeCall::Evm(evm_call(input)).dispatch(RuntimeOrigin::root()));
 
-			let expected: crate::mock::Event = CrowdloanEvent::RewardsPaid(Alice.into(), 25).into();
+			let expected: crate::mock::RuntimeEvent =
+				CrowdloanEvent::RewardsPaid(Alice.into(), 25).into();
 			// Assert that the events vector contains the one expected
 			assert!(events().contains(&expected));
 		});
@@ -181,16 +197,18 @@ fn reward_info_works() {
 			roll_to(2);
 
 			let init_block = Crowdloan::init_vesting_block();
-			assert_ok!(Call::Crowdloan(CrowdloanCall::initialize_reward_vec {
-				rewards: vec![
-					([1u8; 32].into(), Some(Alice.into()), 50u32.into()),
-					([2u8; 32].into(), Some(Bob.into()), 50u32.into()),
-				]
-			})
-			.dispatch(Origin::root()));
+			assert_ok!(
+				RuntimeCall::Crowdloan(CrowdloanCall::initialize_reward_vec {
+					rewards: vec![
+						([1u8; 32].into(), Some(Alice.into()), 50u32.into()),
+						([2u8; 32].into(), Some(Bob.into()), 50u32.into()),
+					]
+				})
+				.dispatch(RuntimeOrigin::root())
+			);
 
 			assert_ok!(Crowdloan::complete_initialization(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				init_block + VESTING
 			));
 
@@ -200,19 +218,14 @@ fn reward_info_works() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
+					Precompile1,
 					PCall::reward_info {
 						contributor: Address(Alice.into()),
 					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(
-					EvmDataWriter::new()
-						.write(U256::from(50u64))
-						.write(U256::from(10u64))
-						.build(),
-				);
+				.execute_returns((U256::from(50u64), U256::from(10u64)));
 		});
 }
 
@@ -228,16 +241,18 @@ fn update_reward_address_works() {
 			roll_to(2);
 
 			let init_block = Crowdloan::init_vesting_block();
-			assert_ok!(Call::Crowdloan(CrowdloanCall::initialize_reward_vec {
-				rewards: vec![
-					([1u8; 32].into(), Some(Alice.into()), 50u32.into()),
-					([2u8; 32].into(), Some(Bob.into()), 50u32.into()),
-				]
-			})
-			.dispatch(Origin::root()));
+			assert_ok!(
+				RuntimeCall::Crowdloan(CrowdloanCall::initialize_reward_vec {
+					rewards: vec![
+						([1u8; 32].into(), Some(Alice.into()), 50u32.into()),
+						([2u8; 32].into(), Some(Bob.into()), 50u32.into()),
+					]
+				})
+				.dispatch(RuntimeOrigin::root())
+			);
 
 			assert_ok!(Crowdloan::complete_initialization(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				init_block + VESTING
 			));
 
@@ -249,15 +264,15 @@ fn update_reward_address_works() {
 			.into();
 
 			// Make sure the call goes through successfully
-			assert_ok!(Call::Evm(evm_call(input)).dispatch(Origin::root()));
+			assert_ok!(RuntimeCall::Evm(evm_call(input)).dispatch(RuntimeOrigin::root()));
 
-			let expected: crate::mock::Event =
+			let expected: crate::mock::RuntimeEvent =
 				CrowdloanEvent::RewardAddressUpdated(Alice.into(), Charlie.into()).into();
 			// Assert that the events vector contains the one expected
 			assert!(events().contains(&expected));
 			// Assert storage is correctly moved
-			assert!(Crowdloan::accounts_payable(H160::from(Alice)).is_none());
-			assert!(Crowdloan::accounts_payable(H160::from(Charlie)).is_some());
+			assert!(Crowdloan::accounts_payable(AccountId::from(Alice)).is_none());
+			assert!(Crowdloan::accounts_payable(AccountId::from(Charlie)).is_some());
 		});
 }
 
@@ -272,34 +287,17 @@ fn test_bound_checks_for_address_parsing() {
 			input.extend_from_slice(&[1u8; 4]); // incomplete data
 
 			precompiles()
-				.prepare_test(Alice, Precompile, input)
+				.prepare_test(Alice, Precompile1, input)
 				.execute_reverts(|output| output == b"Expected at least 1 arguments")
 		})
 }
 
 #[test]
 fn test_solidity_interface_has_all_function_selectors_documented_and_implemented() {
-	for file in ["CrowdloanInterface.sol"] {
-		for solidity_fn in solidity::get_selectors(file) {
-			assert_eq!(
-				solidity_fn.compute_selector_hex(),
-				solidity_fn.docs_selector,
-				"documented selector for '{}' did not match for file '{}'",
-				solidity_fn.signature(),
-				file,
-			);
-
-			let selector = solidity_fn.compute_selector();
-			if !PCall::supports_selector(selector) {
-				panic!(
-					"failed decoding selector 0x{:x} => '{}' as Action for file '{}'",
-					selector,
-					solidity_fn.signature(),
-					file,
-				)
-			}
-		}
-	}
+	check_precompile_implements_solidity_interfaces(
+		&["CrowdloanInterface.sol"],
+		PCall::supports_selector,
+	)
 }
 
 #[test]
@@ -309,7 +307,7 @@ fn test_deprecated_solidity_selectors_are_supported() {
 		"reward_info(address)",
 		"update_reward_address(address)",
 	] {
-		let selector = solidity::compute_selector(deprecated_function);
+		let selector = compute_selector(deprecated_function);
 		if !PCall::supports_selector(selector) {
 			panic!(
 				"failed decoding selector 0x{:x} => '{}' as Action",

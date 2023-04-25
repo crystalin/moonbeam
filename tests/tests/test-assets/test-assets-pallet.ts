@@ -6,6 +6,8 @@ import { expect } from "chai";
 import { alith, baltathar } from "../../util/accounts";
 import { mockAssetBalance } from "../../util/assets";
 import { describeDevMoonbeam } from "../../util/setup-dev-tests";
+import type { PalletAssetsAssetAccount, PalletAssetsAssetDetails } from "@polkadot/types/lookup";
+import { expectOk } from "../../util/expect";
 
 const ARBITRARY_ASSET_ID = 42259045809535163221576417993425387648n;
 
@@ -16,13 +18,19 @@ describeDevMoonbeam("Pallet Assets - Transfer", (context) => {
     // We need to mint units with sudo.setStorage, as we dont have xcm mocker yet
     // And we need relay tokens for issuing a transaction to be executed in the relay
     const balance = context.polkadotApi.createType("Balance", 100000000000000);
-    const assetBalance = context.polkadotApi.createType("PalletAssetsAssetAccount", {
-      balance: balance,
-    });
+    const assetBalance: PalletAssetsAssetAccount = context.polkadotApi.createType(
+      "PalletAssetsAssetAccount",
+      {
+        balance: balance,
+      }
+    );
 
-    const assetDetails = context.polkadotApi.createType("PalletAssetsAssetDetails", {
-      supply: balance,
-    });
+    const assetDetails: PalletAssetsAssetDetails = context.polkadotApi.createType(
+      "PalletAssetsAssetDetails",
+      {
+        supply: balance,
+      }
+    );
 
     await mockAssetBalance(context, assetBalance, assetDetails, alith, assetId, alith.address);
   });
@@ -50,13 +58,19 @@ describeDevMoonbeam("Pallet Assets - Destruction", (context) => {
     // We need to mint units with sudo.setStorage, as we dont have xcm mocker yet
     // And we need relay tokens for issuing a transaction to be executed in the relay
     const balance = context.polkadotApi.createType("Balance", 100000000000000);
-    const assetBalance = context.polkadotApi.createType("PalletAssetsAssetAccount", {
-      balance: balance,
-    });
+    const assetBalance: PalletAssetsAssetAccount = context.polkadotApi.createType(
+      "PalletAssetsAssetAccount",
+      {
+        balance: balance,
+      }
+    );
 
-    const assetDetails = context.polkadotApi.createType("PalletAssetsAssetDetails", {
-      supply: balance,
-    });
+    const assetDetails: PalletAssetsAssetDetails = context.polkadotApi.createType(
+      "PalletAssetsAssetDetails",
+      {
+        supply: balance,
+      }
+    );
 
     await mockAssetBalance(context, assetBalance, assetDetails, alith, assetId, alith.address);
 
@@ -66,13 +80,6 @@ describeDevMoonbeam("Pallet Assets - Destruction", (context) => {
   });
 
   it("should destroy asset Balance, ", async function () {
-    // We first create the witness
-    const assetDestroyWitness = context.polkadotApi.createType("PalletAssetsDestroyWitness", {
-      accounts: 1,
-      sufficients: 1,
-      approvals: 0,
-    });
-
     const metadataBefore = await context.polkadotApi.query.assets.metadata(assetId.toU8a());
 
     // Name is equal to "DOT" in hex
@@ -83,11 +90,14 @@ describeDevMoonbeam("Pallet Assets - Destruction", (context) => {
     expect(assetDetailsBefore.isNone).to.eq(false);
 
     // Destroy asset
-    await context.createBlock(
-      context.polkadotApi.tx.sudo.sudo(
-        context.polkadotApi.tx.assets.destroy(assetId, assetDestroyWitness)
+    await expectOk(
+      context.createBlock(
+        context.polkadotApi.tx.sudo.sudo(context.polkadotApi.tx.assets.startDestroy(assetId))
       )
     );
+    await expectOk(context.createBlock(context.polkadotApi.tx.assets.destroyAccounts(assetId)));
+    await expectOk(context.createBlock(context.polkadotApi.tx.assets.destroyApprovals(assetId)));
+    await expectOk(context.createBlock(context.polkadotApi.tx.assets.finishDestroy(assetId)));
 
     // Baltathar balance is None
     const baltatharBalance = await context.polkadotApi.query.assets.account(

@@ -39,6 +39,7 @@ pub use fp_evm::GenesisAccount;
 pub use frame_support::traits::Get;
 use frame_support::{
 	construct_runtime,
+	dispatch::{DispatchClass, GetDispatchInfo},
 	pallet_prelude::DispatchResult,
 	parameter_types,
 	traits::{
@@ -47,9 +48,9 @@ use frame_support::{
 		OffchainWorker, OnFinalize, OnIdle, OnInitialize, OnRuntimeUpgrade, OnUnbalanced,
 	},
 	weights::{
-		constants::{RocksDbWeight, WEIGHT_PER_SECOND},
-		ConstantMultiplier, DispatchClass, GetDispatchInfo, Weight, WeightToFeeCoefficient,
-		WeightToFeeCoefficients, WeightToFeePolynomial,
+		constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
+		ConstantMultiplier, Weight, WeightToFeeCoefficient, WeightToFeeCoefficients,
+		WeightToFeePolynomial,
 	},
 	PalletId,
 };
@@ -91,11 +92,11 @@ use smallvec::smallvec;
 use sp_version::NativeVersion;
 use sp_version::RuntimeVersion;
 
-use nimbus_primitives::{CanAuthor, NimbusId};
+use nimbus_primitives::CanAuthor;
 
 mod precompiles;
 pub use precompiles::{
-	MoonriverPrecompiles, FOREIGN_ASSET_PRECOMPILE_ADDRESS_PREFIX,
+	MoonriverPrecompiles, PrecompileName, FOREIGN_ASSET_PRECOMPILE_ADDRESS_PREFIX,
 	LOCAL_ASSET_PRECOMPILE_ADDRESS_PREFIX,
 };
 
@@ -105,7 +106,11 @@ pub use sp_runtime::BuildStorage;
 pub type Precompiles = MoonriverPrecompiles<Runtime>;
 
 pub mod asset_config;
+pub mod governance;
 pub mod xcm_config;
+use governance::councils::*;
+
+pub use governance::councils::*;
 
 /// MOVR, the native token, uses 18 decimals of precision.
 pub mod currency {
@@ -133,7 +138,9 @@ pub mod currency {
 }
 
 /// Maximum weight per block
-pub const MAXIMUM_BLOCK_WEIGHT: Weight = WEIGHT_PER_SECOND / 2;
+pub const MAXIMUM_BLOCK_WEIGHT: Weight = Weight::from_ref_time(WEIGHT_REF_TIME_PER_SECOND)
+	.saturating_div(2)
+	.set_proof_size(cumulus_primitives_core::relay_chain::MAX_POV_SIZE as u64);
 
 pub const MILLISECS_PER_BLOCK: u64 = 12000;
 pub const MINUTES: BlockNumber = 60_000 / (MILLISECS_PER_BLOCK as BlockNumber);
@@ -167,7 +174,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("moonriver"),
 	impl_name: create_runtime_str!("moonriver"),
 	authoring_version: 3,
-	spec_version: 1900,
+	spec_version: 2400,
 	impl_version: 0,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 2,
@@ -184,13 +191,33 @@ pub fn native_version() -> NativeVersion {
 }
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
+pub const NORMAL_WEIGHT: Weight = MAXIMUM_BLOCK_WEIGHT.saturating_mul(3).saturating_div(4);
+// Here we assume Ethereum's base fee of 21000 gas and convert to weight, but we
+// subtract roughly the cost of a balance transfer from it (about 1/3 the cost)
+// and some cost to account for per-byte-fee.
+// TODO: we should use benchmarking's overhead feature to measure this
+pub const EXTRINSIC_BASE_WEIGHT: Weight = Weight::from_ref_time(10000 * WEIGHT_PER_GAS);
+
+pub struct RuntimeBlockWeights;
+impl Get<frame_system::limits::BlockWeights> for RuntimeBlockWeights {
+	fn get() -> frame_system::limits::BlockWeights {
+		frame_system::limits::BlockWeights::builder()
+			.for_class(DispatchClass::Normal, |weights| {
+				weights.base_extrinsic = EXTRINSIC_BASE_WEIGHT;
+				weights.max_total = NORMAL_WEIGHT.into();
+			})
+			.for_class(DispatchClass::Operational, |weights| {
+				weights.max_total = MAXIMUM_BLOCK_WEIGHT.into();
+				weights.reserved = (MAXIMUM_BLOCK_WEIGHT - NORMAL_WEIGHT).into();
+			})
+			.avg_block_initialization(Perbill::from_percent(10))
+			.build()
+			.expect("Provided BlockWeight definitions are valid, qed")
+	}
+}
 
 parameter_types! {
 	pub const Version: RuntimeVersion = VERSION;
-	/// We allow for one half second of compute with a 6 second average block time.
-	/// These values are dictated by Polkadot for the parachain.
-	pub BlockWeights: frame_system::limits::BlockWeights = frame_system::limits::BlockWeights
-		::with_sensible_defaults(MAXIMUM_BLOCK_WEIGHT, NORMAL_DISPATCH_RATIO);
 	/// We allow for 5 MB blocks.
 	pub BlockLength: frame_system::limits::BlockLength = frame_system::limits::BlockLength
 		::max_with_normal_ratio(5 * 1024 * 1024, NORMAL_DISPATCH_RATIO);
@@ -200,7 +227,7 @@ impl frame_system::Config for Runtime {
 	/// The identifier used to distinguish between accounts.
 	type AccountId = AccountId;
 	/// The aggregated dispatch type that is available for extrinsics.
-	type Call = Call;
+	type RuntimeCall = RuntimeCall;
 	/// The lookup mechanism to get account ID from whatever is passed in dispatchers.
 	type Lookup = IdentityLookup<AccountId>;
 	/// The index type for storing how many extrinsics an account has signed.
@@ -214,13 +241,13 @@ impl frame_system::Config for Runtime {
 	/// The header type.
 	type Header = generic::Header<BlockNumber, BlakeTwo256>;
 	/// The ubiquitous event type.
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	/// The ubiquitous origin type.
-	type Origin = Origin;
+	type RuntimeOrigin = RuntimeOrigin;
 	/// Maximum number of block number to block hash mappings to keep (oldest pruned first).
 	type BlockHashCount = ConstU32<256>;
 	/// Maximum weight of each block. With a default weight system of 1byte == 1weight, 4mb is ok.
-	type BlockWeights = BlockWeights;
+	type BlockWeights = RuntimeBlockWeights;
 	/// Maximum size of all encoded transactions (in bytes) that are allowed in one block.
 	type BlockLength = BlockLength;
 	/// Runtime version.
@@ -239,8 +266,8 @@ impl frame_system::Config for Runtime {
 }
 
 impl pallet_utility::Config for Runtime {
-	type Event = Event;
-	type Call = Call;
+	type RuntimeEvent = RuntimeEvent;
+	type RuntimeCall = RuntimeCall;
 	type PalletsOrigin = OriginCaller;
 	type WeightInfo = pallet_utility::weights::SubstrateWeight<Runtime>;
 }
@@ -260,7 +287,7 @@ impl pallet_balances::Config for Runtime {
 	/// The type for recording an account's balance.
 	type Balance = Balance;
 	/// The ubiquitous event type.
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type DustRemoval = ();
 	type ExistentialDeposit = ConstU128<0>;
 	type AccountStore = System;
@@ -317,7 +344,7 @@ impl WeightToFeePolynomial for LengthToFee {
 }
 
 impl pallet_transaction_payment::Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type OnChargeTransaction = CurrencyAdapter<Balances, DealWithFees<Runtime>>;
 	type OperationalFeeMultiplier = ConstU8<5>;
 	type WeightToFee = ConstantMultiplier<Balance, ConstU128<{ currency::WEIGHT_FEE }>>;
@@ -327,8 +354,6 @@ impl pallet_transaction_payment::Config for Runtime {
 
 impl pallet_ethereum_chain_id::Config for Runtime {}
 
-impl pallet_randomness_collective_flip::Config for Runtime {}
-
 /// Current approximation of the gas/s consumption considering
 /// EVM execution over compiled WASM (on 4.4Ghz CPU).
 /// Given the 500ms Weight, from which 75% only are used for transactions,
@@ -337,43 +362,51 @@ pub const GAS_PER_SECOND: u64 = 40_000_000;
 
 /// Approximate ratio of the amount of Weight per Gas.
 /// u64 works for approximations because Weight is a very small unit compared to gas.
-pub const WEIGHT_PER_GAS: u64 = WEIGHT_PER_SECOND / GAS_PER_SECOND;
-
-pub struct MoonbeamGasWeightMapping;
-
-impl pallet_evm::GasWeightMapping for MoonbeamGasWeightMapping {
-	fn gas_to_weight(gas: u64) -> Weight {
-		gas.saturating_mul(WEIGHT_PER_GAS)
-	}
-	fn weight_to_gas(weight: Weight) -> u64 {
-		u64::try_from(weight.wrapping_div(WEIGHT_PER_GAS)).unwrap_or(u32::MAX as u64)
-	}
-}
+pub const WEIGHT_PER_GAS: u64 = WEIGHT_REF_TIME_PER_SECOND / GAS_PER_SECOND;
 
 parameter_types! {
 	pub BlockGasLimit: U256
-		= U256::from(NORMAL_DISPATCH_RATIO * MAXIMUM_BLOCK_WEIGHT / WEIGHT_PER_GAS);
+		= U256::from(NORMAL_DISPATCH_RATIO * MAXIMUM_BLOCK_WEIGHT.ref_time() / WEIGHT_PER_GAS);
 	/// The portion of the `NORMAL_DISPATCH_RATIO` that we adjust the fees with. Blocks filled less
 	/// than this will decrease the weight and more will increase.
 	pub const TargetBlockFullness: Perquintill = Perquintill::from_percent(25);
 	/// The adjustment variable of the runtime. Higher values will cause `TargetBlockFullness` to
 	/// change the fees more rapidly. This low value causes changes to occur slowly over time.
-	pub AdjustmentVariable: Multiplier = Multiplier::saturating_from_rational(3, 100_000);
+	pub AdjustmentVariable: Multiplier = Multiplier::saturating_from_rational(4, 1_000);
 	/// Minimum amount of the multiplier. This value cannot be too low. A test case should ensure
 	/// that combined with `AdjustmentVariable`, we can recover from the minimum.
 	/// See `multiplier_can_grow_from_zero` in integration_tests.rs.
 	/// This value is currently only used by pallet-transaction-payment as an assertion that the
 	/// next multiplier is always > min value.
-	pub MinimumMultiplier: Multiplier = Multiplier::saturating_from_rational(1, 1_000_000u128);
+	pub MinimumMultiplier: Multiplier = Multiplier::from(1u128);
+	/// Maximum multiplier. We pick a value that is expensive but not impossibly so; it should act
+	/// as a safety net.
+	pub MaximumMultiplier: Multiplier = Multiplier::from(100_000u128);
 	pub PrecompilesValue: MoonriverPrecompiles<Runtime> = MoonriverPrecompiles::<_>::new();
+	pub WeightPerGas: Weight = Weight::from_ref_time(WEIGHT_PER_GAS);
 }
 
-pub struct FixedGasPrice;
-impl FeeCalculator for FixedGasPrice {
+pub struct TransactionPaymentAsGasPrice;
+impl FeeCalculator for TransactionPaymentAsGasPrice {
 	fn min_gas_price() -> (U256, Weight) {
+		// note: transaction-payment differs from EIP-1559 in that its tip and length fees are not
+		//       scaled by the multiplier, which means its multiplier will be overstated when
+		//       applied to an ethereum transaction
+		// note: transaction-payment uses both a congestion modifier (next_fee_multiplier, which is
+		//       updated once per block in on_finalize) and a 'WeightToFee' implementation. Our
+		//       runtime implements this as a 'ConstantModifier', so we can get away with a simple
+		//       multiplication here.
+		// It is imperative that `saturating_mul_int` be performed as late as possible in the
+		// expression since it involves fixed point multiplication with a division by a fixed
+		// divisor. This leads to truncation and subsequent precision loss if performed too early.
+		// This can lead to min_gas_price being same across blocks even if the multiplier changes.
+		// There's still some precision loss when the final `gas_price` (used_gas * min_gas_price)
+		// is computed in frontier, but that's currently unavoidable.
+		let min_gas_price = TransactionPayment::next_fee_multiplier()
+			.saturating_mul_int(currency::WEIGHT_FEE.saturating_mul(WEIGHT_PER_GAS as u128));
 		(
-			(1 * currency::GIGAWEI * currency::SUPPLY_FACTOR).into(),
-			0u64,
+			min_gas_price.into(),
+			<Runtime as frame_system::Config>::DbWeight::get().reads(1),
 		)
 	}
 }
@@ -389,8 +422,13 @@ impl FeeCalculator for FixedGasPrice {
 ///     where: v is AdjustmentVariable
 ///            target is TargetBlockFullness
 ///            min is MinimumMultiplier
-pub type SlowAdjustingFeeUpdate<R> =
-	TargetedFeeAdjustment<R, TargetBlockFullness, AdjustmentVariable, MinimumMultiplier>;
+pub type SlowAdjustingFeeUpdate<R> = TargetedFeeAdjustment<
+	R,
+	TargetBlockFullness,
+	AdjustmentVariable,
+	MinimumMultiplier,
+	MaximumMultiplier,
+>;
 
 use frame_support::traits::FindAuthor;
 //TODO It feels like this shold be able to work for any T: H160, but I tried for
@@ -415,14 +453,15 @@ where
 moonbeam_runtime_common::impl_on_charge_evm_transaction!();
 
 impl pallet_evm::Config for Runtime {
-	type FeeCalculator = FixedGasPrice;
-	type GasWeightMapping = MoonbeamGasWeightMapping;
+	type FeeCalculator = TransactionPaymentAsGasPrice;
+	type GasWeightMapping = pallet_evm::FixedGasWeightMapping<Self>;
+	type WeightPerGas = WeightPerGas;
 	type BlockHashMapping = pallet_ethereum::EthereumBlockHashMapping<Self>;
 	type CallOrigin = EnsureAddressRoot<AccountId>;
 	type WithdrawOrigin = EnsureAddressNever<AccountId>;
 	type AddressMapping = moonbeam_runtime_common::IntoAddressMapping;
 	type Currency = Balances;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type Runner = pallet_evm::runner::stack::Runner<Self>;
 	type PrecompilesType = MoonriverPrecompiles<Self>;
 	type PrecompilesValue = PrecompilesValue;
@@ -430,129 +469,33 @@ impl pallet_evm::Config for Runtime {
 	type OnChargeTransaction = OnChargeEVMTransaction<DealWithFees<Runtime>>;
 	type BlockGasLimit = BlockGasLimit;
 	type FindAuthor = FindAuthorAdapter<AuthorInherent>;
+	type OnCreate = ();
 }
 
 parameter_types! {
-	pub MaximumSchedulerWeight: Weight = NORMAL_DISPATCH_RATIO * BlockWeights::get().max_block;
+	pub MaximumSchedulerWeight: Weight = NORMAL_DISPATCH_RATIO * RuntimeBlockWeights::get().max_block;
 }
 
 impl pallet_scheduler::Config for Runtime {
-	type Event = Event;
-	type Origin = Origin;
+	type RuntimeEvent = RuntimeEvent;
+	type RuntimeOrigin = RuntimeOrigin;
 	type PalletsOrigin = OriginCaller;
-	type Call = Call;
+	type RuntimeCall = RuntimeCall;
 	type MaximumWeight = MaximumSchedulerWeight;
 	type ScheduleOrigin = EnsureRoot<AccountId>;
 	type MaxScheduledPerBlock = ConstU32<50>;
 	type WeightInfo = pallet_scheduler::weights::SubstrateWeight<Runtime>;
 	type OriginPrivilegeCmp = EqualPrivilegeOnly;
-	type PreimageProvider = ();
-	type NoPreimagePostponement = ();
+	type Preimages = Preimage;
 }
 
-type CouncilInstance = pallet_collective::Instance1;
-type TechCommitteeInstance = pallet_collective::Instance2;
-type TreasuryCouncilInstance = pallet_collective::Instance3;
-
-impl pallet_collective::Config<CouncilInstance> for Runtime {
-	type Origin = Origin;
-	type Event = Event;
-	type Proposal = Call;
-	/// The maximum amount of time (in blocks) for council members to vote on motions.
-	/// Motions may end in fewer blocks if enough votes are cast to determine the result.
-	type MotionDuration = ConstU32<{ 3 * DAYS }>;
-	/// The maximum number of proposals that can be open in the council at once.
-	type MaxProposals = ConstU32<100>;
-	/// The maximum number of council members.
-	type MaxMembers = ConstU32<100>;
-	type DefaultVote = pallet_collective::MoreThanMajorityThenPrimeDefaultVote;
-	type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
-}
-
-impl pallet_collective::Config<TechCommitteeInstance> for Runtime {
-	type Origin = Origin;
-	type Event = Event;
-	type Proposal = Call;
-	/// The maximum amount of time (in blocks) for technical committee members to vote on motions.
-	/// Motions may end in fewer blocks if enough votes are cast to determine the result.
-	type MotionDuration = ConstU32<{ 3 * DAYS }>;
-	/// The maximum number of proposals that can be open in the technical committee at once.
-	type MaxProposals = ConstU32<100>;
-	/// The maximum number of technical committee members.
-	type MaxMembers = ConstU32<100>;
-	type DefaultVote = pallet_collective::MoreThanMajorityThenPrimeDefaultVote;
-	type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
-}
-
-impl pallet_collective::Config<TreasuryCouncilInstance> for Runtime {
-	type Origin = Origin;
-	type Event = Event;
-	type Proposal = Call;
-	/// The maximum amount of time (in blocks) for treasury council members to vote on motions.
-	/// Motions may end in fewer blocks if enough votes are cast to determine the result.
-	type MotionDuration = ConstU32<{ 3 * DAYS }>;
-	/// The maximum number of proposals that can be open in the treasury council at once.
-	type MaxProposals = ConstU32<20>;
-	/// The maximum number of treasury council members.
-	type MaxMembers = ConstU32<9>;
-	type DefaultVote = pallet_collective::MoreThanMajorityThenPrimeDefaultVote;
-	type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
-}
-
-// The purpose of this offset is to ensure that a democratic proposal will not apply in the same
-// block as a round change.
-const ENACTMENT_OFFSET: u32 = 300;
-
-impl pallet_democracy::Config for Runtime {
-	type Proposal = Call;
-	type Event = Event;
+impl pallet_preimage::Config for Runtime {
+	type WeightInfo = pallet_preimage::weights::SubstrateWeight<Runtime>;
+	type RuntimeEvent = RuntimeEvent;
 	type Currency = Balances;
-	type EnactmentPeriod = ConstU32<{ 1 * DAYS + ENACTMENT_OFFSET }>;
-	type LaunchPeriod = ConstU32<{ 1 * DAYS }>;
-	type VotingPeriod = ConstU32<{ 5 * DAYS }>;
-
-	type VoteLockingPeriod = ConstU32<{ 1 * DAYS }>;
-	type FastTrackVotingPeriod = ConstU32<{ 3 * HOURS }>;
-	type MinimumDeposit = ConstU128<{ 4 * currency::MOVR * currency::SUPPLY_FACTOR }>;
-	/// To decide what their next motion is.
-	type ExternalOrigin =
-		pallet_collective::EnsureProportionAtLeast<AccountId, CouncilInstance, 1, 2>;
-	/// To have the next scheduled referendum be a straight majority-carries vote.
-	type ExternalMajorityOrigin =
-		pallet_collective::EnsureProportionAtLeast<AccountId, CouncilInstance, 3, 5>;
-	/// To have the next scheduled referendum be a straight default-carries (NTB) vote.
-	type ExternalDefaultOrigin =
-		pallet_collective::EnsureProportionAtLeast<AccountId, CouncilInstance, 3, 5>;
-	/// To allow a shorter voting/enactment period for external proposals.
-	type FastTrackOrigin =
-		pallet_collective::EnsureProportionAtLeast<AccountId, TechCommitteeInstance, 1, 2>;
-	/// To instant fast track.
-	type InstantOrigin =
-		pallet_collective::EnsureProportionAtLeast<AccountId, TechCommitteeInstance, 3, 5>;
-	// To cancel a proposal which has been passed.
-	type CancellationOrigin = EitherOfDiverse<
-		EnsureRoot<AccountId>,
-		pallet_collective::EnsureProportionAtLeast<AccountId, CouncilInstance, 3, 5>,
-	>;
-	// To cancel a proposal before it has been passed.
-	type CancelProposalOrigin = EitherOfDiverse<
-		EnsureRoot<AccountId>,
-		pallet_collective::EnsureProportionAtLeast<AccountId, TechCommitteeInstance, 3, 5>,
-	>;
-	type BlacklistOrigin = EnsureRoot<AccountId>;
-	// Any single technical committee member may veto a coming council proposal, however they can
-	// only do it once and it lasts only for the cooloff period.
-	type VetoOrigin = pallet_collective::EnsureMember<AccountId, TechCommitteeInstance>;
-	type CooloffPeriod = ConstU32<{ 7 * DAYS }>;
-	type PreimageByteDeposit = ConstU128<{ currency::STORAGE_BYTE_FEE }>;
-	type Slash = ();
-	type InstantAllowed = ConstBool<true>;
-	type Scheduler = Scheduler;
-	type MaxVotes = ConstU32<100>;
-	type OperationalPreimageOrigin = pallet_collective::EnsureMember<AccountId, CouncilInstance>;
-	type PalletsOrigin = OriginCaller;
-	type WeightInfo = pallet_democracy::weights::SubstrateWeight<Runtime>;
-	type MaxProposals = ConstU32<100>;
+	type ManagerOrigin = EnsureRoot<AccountId>;
+	type BaseDeposit = ConstU128<{ 5 * currency::MOVR * currency::SUPPLY_FACTOR }>;
+	type ByteDeposit = ConstU128<{ currency::STORAGE_BYTE_FEE }>;
 }
 
 parameter_types! {
@@ -577,7 +520,7 @@ impl pallet_treasury::Config for Runtime {
 	type ApproveOrigin = TreasuryApproveOrigin;
 	// More than half of the council is required (or root) to reject a proposal
 	type RejectOrigin = TreasuryRejectOrigin;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	// If spending proposal rejected, transfer proposer bond to treasury
 	type OnSlash = Treasury;
 	type ProposalBond = ProposalBond;
@@ -594,15 +537,21 @@ impl pallet_treasury::Config for Runtime {
 
 type IdentityForceOrigin = EitherOfDiverse<
 	EnsureRoot<AccountId>,
-	pallet_collective::EnsureProportionMoreThan<AccountId, CouncilInstance, 1, 2>,
+	EitherOfDiverse<
+		pallet_collective::EnsureProportionMoreThan<AccountId, CouncilInstance, 1, 2>,
+		governance::custom_origins::GeneralAdmin,
+	>,
 >;
 type IdentityRegistrarOrigin = EitherOfDiverse<
 	EnsureRoot<AccountId>,
-	pallet_collective::EnsureProportionMoreThan<AccountId, CouncilInstance, 1, 2>,
+	EitherOfDiverse<
+		pallet_collective::EnsureProportionMoreThan<AccountId, CouncilInstance, 1, 2>,
+		governance::custom_origins::GeneralAdmin,
+	>,
 >;
 
 impl pallet_identity::Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type Currency = Balances;
 	// Add one item in storage and take 258 bytes
 	type BasicDeposit = ConstU128<{ currency::deposit(1, 258) }>;
@@ -644,42 +593,17 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 }
 
 impl pallet_ethereum::Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type StateRoot = pallet_ethereum::IntermediateStateRoot<Self>;
 }
 
 parameter_types! {
-	pub DefaultBaseFeePerGas: U256 = (1 * currency::GIGAWEI * currency::SUPPLY_FACTOR).into();
-}
-
-pub struct BaseFeeThreshold;
-impl pallet_base_fee::BaseFeeThreshold for BaseFeeThreshold {
-	fn lower() -> Permill {
-		Permill::zero()
-	}
-	fn ideal() -> Permill {
-		Permill::from_parts(500_000)
-	}
-	fn upper() -> Permill {
-		Permill::from_parts(1_000_000)
-	}
-}
-
-impl pallet_base_fee::Config for Runtime {
-	type Event = Event;
-	type Threshold = BaseFeeThreshold;
-	// Tells `pallet_base_fee` whether to calculate a new BaseFee `on_finalize` or not.
-	type IsActive = ConstBool<false>;
-	type DefaultBaseFeePerGas = DefaultBaseFeePerGas;
-}
-
-parameter_types! {
-	pub const ReservedXcmpWeight: Weight = MAXIMUM_BLOCK_WEIGHT / 4;
-	pub const ReservedDmpWeight: Weight = MAXIMUM_BLOCK_WEIGHT / 4;
+	pub const ReservedXcmpWeight: Weight = MAXIMUM_BLOCK_WEIGHT.saturating_div(4);
+	pub const ReservedDmpWeight: Weight = MAXIMUM_BLOCK_WEIGHT.saturating_div(4);
 }
 
 impl cumulus_pallet_parachain_system::Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type OnSystemEvent = ();
 	type SelfParaId = ParachainInfo;
 	type DmpMessageHandler = MaintenanceMode;
@@ -692,27 +616,38 @@ impl cumulus_pallet_parachain_system::Config for Runtime {
 
 impl parachain_info::Config for Runtime {}
 
-pub struct OnCollatorPayout;
-impl pallet_parachain_staking::OnCollatorPayout<AccountId, Balance> for OnCollatorPayout {
-	fn on_collator_payout(
-		for_round: pallet_parachain_staking::RoundIndex,
-		collator_id: AccountId,
-		amount: Balance,
-	) -> Weight {
-		MoonbeamOrbiters::distribute_rewards(for_round, collator_id, amount)
-	}
-}
 pub struct OnNewRound;
 impl pallet_parachain_staking::OnNewRound for OnNewRound {
 	fn on_new_round(round_index: pallet_parachain_staking::RoundIndex) -> Weight {
 		MoonbeamOrbiters::on_new_round(round_index)
 	}
 }
+pub struct PayoutCollatorOrOrbiterReward;
+impl pallet_parachain_staking::PayoutCollatorReward<Runtime> for PayoutCollatorOrOrbiterReward {
+	fn payout_collator_reward(
+		for_round: pallet_parachain_staking::RoundIndex,
+		collator_id: AccountId,
+		amount: Balance,
+	) -> Weight {
+		let extra_weight = if MoonbeamOrbiters::is_orbiter(for_round, collator_id) {
+			MoonbeamOrbiters::distribute_rewards(for_round, collator_id, amount)
+		} else {
+			ParachainStaking::mint_collator_reward(for_round, collator_id, amount)
+		};
+
+		<Runtime as frame_system::Config>::DbWeight::get()
+			.reads(1)
+			.saturating_add(extra_weight)
+	}
+}
+
+type MonetaryGovernanceOrigin =
+	EitherOfDiverse<EnsureRoot<AccountId>, governance::custom_origins::GeneralAdmin>;
 
 impl pallet_parachain_staking::Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type Currency = Balances;
-	type MonetaryGovernanceOrigin = EnsureRoot<AccountId>;
+	type MonetaryGovernanceOrigin = MonetaryGovernanceOrigin;
 	/// Minimum round length is 2 minutes (10 * 12 second block times)
 	type MinBlocksPerRound = ConstU32<10>;
 	/// Rounds before the collator leaving the candidates request can be executed
@@ -736,15 +671,16 @@ impl pallet_parachain_staking::Config for Runtime {
 	/// Maximum delegations per delegator
 	type MaxDelegationsPerDelegator = ConstU32<100>;
 	/// Minimum stake required to become a collator
-	type MinCollatorStk = ConstU128<{ 1000 * currency::MOVR * currency::SUPPLY_FACTOR }>;
+	type MinCollatorStk = ConstU128<{ 10000 * currency::MOVR * currency::SUPPLY_FACTOR }>;
 	/// Minimum stake required to be reserved to be a candidate
-	type MinCandidateStk = ConstU128<{ 500 * currency::MOVR * currency::SUPPLY_FACTOR }>;
+	type MinCandidateStk = ConstU128<{ 10000 * currency::MOVR * currency::SUPPLY_FACTOR }>;
 	/// Minimum stake required to be reserved to be a delegator
 	type MinDelegation = ConstU128<{ 5 * currency::MOVR * currency::SUPPLY_FACTOR }>;
 	/// Minimum stake required to be reserved to be a delegator
 	type MinDelegatorStk = ConstU128<{ 5 * currency::MOVR * currency::SUPPLY_FACTOR }>;
 	type BlockAuthor = AuthorInherent;
-	type OnCollatorPayout = OnCollatorPayout;
+	type OnCollatorPayout = ();
+	type PayoutCollatorReward = PayoutCollatorOrOrbiterReward;
 	type OnNewRound = OnNewRound;
 	type WeightInfo = pallet_parachain_staking::weights::SubstrateWeight<Runtime>;
 }
@@ -757,8 +693,8 @@ impl pallet_author_inherent::Config for Runtime {
 }
 
 impl pallet_author_slot_filter::Config for Runtime {
-	type Event = Event;
-	type RandomnessSource = RandomnessCollectiveFlip;
+	type RuntimeEvent = RuntimeEvent;
+	type RandomnessSource = Randomness;
 	type PotentialAuthors = ParachainStaking;
 	type WeightInfo = pallet_author_slot_filter::weights::SubstrateWeight<Runtime>;
 }
@@ -771,7 +707,7 @@ parameter_types! {
 }
 
 impl pallet_crowdloan_rewards::Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type Initialized = ConstBool<false>;
 	type InitializationPayment = InitializationPayment;
 	type MaxInitContributors = ConstU32<500>;
@@ -790,7 +726,7 @@ impl pallet_crowdloan_rewards::Config for Runtime {
 // This is a simple session key manager. It should probably either work with, or be replaced
 // entirely by pallet sessions
 impl pallet_author_mapping::Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type DepositCurrency = Balances;
 	type DepositAmount = ConstU128<{ 100 * currency::MOVR * currency::SUPPLY_FACTOR }>;
 	type Keys = session_keys_primitives::VrfId;
@@ -827,44 +763,164 @@ impl Default for ProxyType {
 	}
 }
 
-impl InstanceFilter<Call> for ProxyType {
-	fn filter(&self, c: &Call) -> bool {
+fn is_governance_precompile(precompile_name: &precompiles::PrecompileName) -> bool {
+	matches!(
+		precompile_name,
+		PrecompileName::DemocracyPrecompile
+			| PrecompileName::CouncilInstance
+			| PrecompileName::TechCommitteeInstance
+			| PrecompileName::TreasuryCouncilInstance
+			| PrecompileName::PreimagePrecompile
+			| PrecompileName::ReferendaPrecompile
+			| PrecompileName::ConvictionVotingPrecompile
+			| PrecompileName::OpenTechCommitteeInstance
+	)
+}
+
+// Be careful: Each time this filter is modified, the substrate filter must also be modified
+// consistently.
+impl pallet_evm_precompile_proxy::EvmProxyCallFilter for ProxyType {
+	fn is_evm_proxy_call_allowed(
+		&self,
+		call: &pallet_evm_precompile_proxy::EvmSubCall,
+		recipient_has_code: bool,
+	) -> bool {
+		use pallet_evm::PrecompileSet as _;
+		match self {
+			ProxyType::Any => {
+				match PrecompileName::from_address(call.to.0) {
+					// Any precompile that can execute a subcall should be forbidden here,
+					// to ensure that unauthorized smart contract can't be called
+					// indirectly.
+					// To be safe, we only allow the precompiles we need.
+					Some(
+						PrecompileName::AuthorMappingPrecompile
+						| PrecompileName::ParachainStakingPrecompile,
+					) => true,
+					Some(ref precompile) if is_governance_precompile(precompile) => true,
+					// All non-whitelisted precompiles are forbidden
+					Some(_) => false,
+					// Allow evm transfer to "simple" account (no code nor precompile)
+					// For the moment, no smart contract other than precompiles is allowed.
+					// In the future, we may create a dynamic whitelist to authorize some audited
+					// smart contracts through governance.
+					None => {
+						// If the address is not recognized, allow only evm transfert to "simple"
+						// accounts (no code nor precompile).
+						// Note: Checking the presence of the code is not enough because some
+						// precompiles have no code.
+						!recipient_has_code && !PrecompilesValue::get().is_precompile(call.to.0)
+					}
+				}
+			}
+			ProxyType::NonTransfer => {
+				call.value == U256::zero()
+					&& match PrecompileName::from_address(call.to.0) {
+						Some(
+							PrecompileName::AuthorMappingPrecompile
+							| PrecompileName::ParachainStakingPrecompile,
+						) => true,
+						Some(ref precompile) if is_governance_precompile(precompile) => true,
+						_ => false,
+					}
+			}
+			ProxyType::Governance => {
+				call.value == U256::zero()
+					&& matches!(
+						PrecompileName::from_address(call.to.0),
+						Some(ref precompile) if is_governance_precompile(precompile)
+					)
+			}
+			ProxyType::Staking => {
+				call.value == U256::zero()
+					&& matches!(
+						PrecompileName::from_address(call.to.0),
+						Some(
+							PrecompileName::AuthorMappingPrecompile
+								| PrecompileName::ParachainStakingPrecompile
+						)
+					)
+			}
+			// The proxy precompile does not contain method cancel_proxy
+			ProxyType::CancelProxy => false,
+			ProxyType::Balances => {
+				// Allow only "simple" accounts as recipient (no code nor precompile).
+				// Note: Checking the presence of the code is not enough because some precompiles
+				// have no code.
+				!recipient_has_code && !PrecompilesValue::get().is_precompile(call.to.0)
+			}
+			ProxyType::AuthorMapping => {
+				call.value == U256::zero()
+					&& matches!(
+						PrecompileName::from_address(call.to.0),
+						Some(PrecompileName::AuthorMappingPrecompile)
+					)
+			}
+			// There is no identity precompile
+			ProxyType::IdentityJudgement => false,
+		}
+	}
+}
+
+// Be careful: Each time this filter is modified, the EVM filter must also be modified consistently.
+impl InstanceFilter<RuntimeCall> for ProxyType {
+	fn filter(&self, c: &RuntimeCall) -> bool {
 		match self {
 			ProxyType::Any => true,
 			ProxyType::NonTransfer => {
 				matches!(
 					c,
-					Call::System(..)
-						| Call::Timestamp(..) | Call::ParachainStaking(..)
-						| Call::Democracy(..) | Call::CouncilCollective(..)
-						| Call::Identity(..) | Call::TechCommitteeCollective(..)
-						| Call::Utility(..) | Call::Proxy(..)
-						| Call::AuthorMapping(..)
-						| Call::CrowdloanRewards(pallet_crowdloan_rewards::Call::claim { .. })
+					RuntimeCall::System(..)
+						| RuntimeCall::ParachainSystem(..)
+						| RuntimeCall::Timestamp(..)
+						| RuntimeCall::ParachainStaking(..)
+						| RuntimeCall::Democracy(..)
+						| RuntimeCall::Referenda(..)
+						| RuntimeCall::Preimage(..)
+						| RuntimeCall::ConvictionVoting(..)
+						| RuntimeCall::CouncilCollective(..)
+						| RuntimeCall::TreasuryCouncilCollective(..)
+						| RuntimeCall::TechCommitteeCollective(..)
+						| RuntimeCall::OpenTechCommitteeCollective(..)
+						| RuntimeCall::Identity(..)
+						| RuntimeCall::Utility(..)
+						| RuntimeCall::Proxy(..) | RuntimeCall::AuthorMapping(..)
+						| RuntimeCall::CrowdloanRewards(
+							pallet_crowdloan_rewards::Call::claim { .. }
+						)
 				)
 			}
 			ProxyType::Governance => matches!(
 				c,
-				Call::Democracy(..)
-					| Call::CouncilCollective(..)
-					| Call::TechCommitteeCollective(..)
-					| Call::Utility(..)
+				RuntimeCall::Democracy(..)
+					| RuntimeCall::Referenda(..)
+					| RuntimeCall::Preimage(..)
+					| RuntimeCall::ConvictionVoting(..)
+					| RuntimeCall::CouncilCollective(..)
+					| RuntimeCall::TreasuryCouncilCollective(..)
+					| RuntimeCall::TechCommitteeCollective(..)
+					| RuntimeCall::OpenTechCommitteeCollective(..)
+					| RuntimeCall::Utility(..)
 			),
 			ProxyType::Staking => matches!(
 				c,
-				Call::ParachainStaking(..)
-					| Call::Utility(..) | Call::AuthorMapping(..)
-					| Call::MoonbeamOrbiters(..)
+				RuntimeCall::ParachainStaking(..)
+					| RuntimeCall::Utility(..)
+					| RuntimeCall::AuthorMapping(..)
+					| RuntimeCall::MoonbeamOrbiters(..)
 			),
 			ProxyType::CancelProxy => matches!(
 				c,
-				Call::Proxy(pallet_proxy::Call::reject_announcement { .. })
+				RuntimeCall::Proxy(pallet_proxy::Call::reject_announcement { .. })
 			),
-			ProxyType::Balances => matches!(c, Call::Balances(..) | Call::Utility(..)),
-			ProxyType::AuthorMapping => matches!(c, Call::AuthorMapping(..)),
+			ProxyType::Balances => {
+				matches!(c, RuntimeCall::Balances(..) | RuntimeCall::Utility(..))
+			}
+			ProxyType::AuthorMapping => matches!(c, RuntimeCall::AuthorMapping(..)),
 			ProxyType::IdentityJudgement => matches!(
 				c,
-				Call::Identity(pallet_identity::Call::provide_judgement { .. }) | Call::Utility(..)
+				RuntimeCall::Identity(pallet_identity::Call::provide_judgement { .. })
+					| RuntimeCall::Utility(..)
 			),
 		}
 	}
@@ -880,8 +936,8 @@ impl InstanceFilter<Call> for ProxyType {
 }
 
 impl pallet_proxy::Config for Runtime {
-	type Event = Event;
-	type Call = Call;
+	type RuntimeEvent = RuntimeEvent;
+	type RuntimeCall = RuntimeCall;
 	type Currency = Balances;
 	type ProxyType = ProxyType;
 	// One storage item; key size 32, value size 8
@@ -901,32 +957,41 @@ impl pallet_proxy::Config for Runtime {
 }
 
 impl pallet_migrations::Config for Runtime {
-	type Event = Event;
-	type MigrationsList = moonbeam_runtime_common::migrations::CommonMigrations<
-		Runtime,
-		CouncilCollective,
-		TechCommitteeCollective,
-	>;
+	type RuntimeEvent = RuntimeEvent;
+	type MigrationsList = (
+		moonbeam_runtime_common::migrations::CommonMigrations<
+			Runtime,
+			CouncilCollective,
+			TechCommitteeCollective,
+		>,
+		moonbeam_runtime_common::migrations::ReferendaMigrations<
+			Runtime,
+			CouncilCollective,
+			TechCommitteeCollective,
+		>,
+	);
+	type XcmExecutionManager = XcmExecutionManager;
+	type WeightInfo = pallet_migrations::weights::SubstrateWeight<Runtime>;
 }
 
 /// Maintenance mode Call filter
 pub struct MaintenanceFilter;
-impl Contains<Call> for MaintenanceFilter {
-	fn contains(c: &Call) -> bool {
+impl Contains<RuntimeCall> for MaintenanceFilter {
+	fn contains(c: &RuntimeCall) -> bool {
 		match c {
-			Call::Assets(_) => false,
-			Call::LocalAssets(_) => false,
-			Call::Balances(_) => false,
-			Call::CrowdloanRewards(_) => false,
-			Call::Ethereum(_) => false,
-			Call::EVM(_) => false,
-			Call::Identity(_) => false,
-			Call::XTokens(_) => false,
-			Call::ParachainStaking(_) => false,
-			Call::MoonbeamOrbiters(_) => false,
-			Call::PolkadotXcm(_) => false,
-			Call::Treasury(_) => false,
-			Call::XcmTransactor(_) => false,
+			RuntimeCall::Assets(_) => false,
+			RuntimeCall::LocalAssets(_) => false,
+			RuntimeCall::Balances(_) => false,
+			RuntimeCall::CrowdloanRewards(_) => false,
+			RuntimeCall::Ethereum(_) => false,
+			RuntimeCall::EVM(_) => false,
+			RuntimeCall::Identity(_) => false,
+			RuntimeCall::XTokens(_) => false,
+			RuntimeCall::ParachainStaking(_) => false,
+			RuntimeCall::MoonbeamOrbiters(_) => false,
+			RuntimeCall::PolkadotXcm(_) => false,
+			RuntimeCall::Treasury(_) => false,
+			RuntimeCall::XcmTransactor(_) => false,
 			_ => true,
 		}
 	}
@@ -938,15 +1003,18 @@ impl Contains<Call> for MaintenanceFilter {
 /// asset-manager, while minting/burning only happens through xcm messages
 /// This can change in the future
 pub struct NormalFilter;
-impl Contains<Call> for NormalFilter {
-	fn contains(c: &Call) -> bool {
+impl Contains<RuntimeCall> for NormalFilter {
+	fn contains(c: &RuntimeCall) -> bool {
 		match c {
-			Call::Assets(method) => match method {
+			RuntimeCall::Assets(method) => match method {
 				pallet_assets::Call::transfer { .. } => true,
 				pallet_assets::Call::transfer_keep_alive { .. } => true,
 				pallet_assets::Call::approve_transfer { .. } => true,
 				pallet_assets::Call::transfer_approved { .. } => true,
 				pallet_assets::Call::cancel_approval { .. } => true,
+				pallet_assets::Call::destroy_accounts { .. } => true,
+				pallet_assets::Call::destroy_approvals { .. } => true,
+				pallet_assets::Call::finish_destroy { .. } => true,
 				_ => false,
 			},
 			// We want to disable create, as we dont want users to be choosing the
@@ -954,27 +1022,22 @@ impl Contains<Call> for NormalFilter {
 			// We also disable destroy, as we want to route destroy through the
 			// asset-manager, which guarantees the removal both at the EVM and
 			// substrate side of things
-			Call::LocalAssets(method) => match method {
+			RuntimeCall::LocalAssets(method) => match method {
 				pallet_assets::Call::create { .. } => false,
-				pallet_assets::Call::destroy { .. } => false,
+				pallet_assets::Call::start_destroy { .. } => false,
 				_ => true,
 			},
 			// We just want to enable this in case of live chains, since the default version
 			// is populated at genesis
-			Call::PolkadotXcm(method) => match method {
+			RuntimeCall::PolkadotXcm(method) => match method {
 				pallet_xcm::Call::force_default_xcm_version { .. } => true,
 				_ => false,
 			},
 			// We filter anonymous proxy as they make "reserve" inconsistent
 			// See: https://github.com/paritytech/substrate/blob/37cca710eed3dadd4ed5364c7686608f5175cce1/frame/proxy/src/lib.rs#L270 // editorconfig-checker-disable-line
-			Call::Proxy(method) => match method {
-				pallet_proxy::Call::anonymous { .. } => false,
-				pallet_proxy::Call::kill_anonymous { .. } => false,
-				_ => true,
-			},
-			// We filter for now transact through signed
-			Call::XcmTransactor(method) => match method {
-				pallet_xcm_transactor::Call::transact_through_signed { .. } => false,
+			RuntimeCall::Proxy(method) => match method {
+				pallet_proxy::Call::create_pure { .. } => false,
+				pallet_proxy::Call::kill_pure { .. } => false,
 				_ => true,
 			},
 			// Filtering the EVM prevents possible re-entrancy from the precompiles which could
@@ -982,19 +1045,35 @@ impl Contains<Call> for NormalFilter {
 			// See https://github.com/PureStake/sr-moonbeam/issues/30
 			// Note: It is also assumed that EVM calls are only allowed through `Origin::Root` so
 			// this can be seen as an additional security
-			Call::EVM(_) => false,
+			RuntimeCall::EVM(_) => false,
 			_ => true,
 		}
 	}
 }
 
 pub struct XcmExecutionManager;
-impl pallet_maintenance_mode::PauseXcmExecution for XcmExecutionManager {
+impl xcm_primitives::PauseXcmExecution for XcmExecutionManager {
 	fn suspend_xcm_execution() -> DispatchResult {
-		XcmpQueue::suspend_xcm_execution(Origin::root())
+		XcmpQueue::suspend_xcm_execution(RuntimeOrigin::root())
 	}
 	fn resume_xcm_execution() -> DispatchResult {
-		XcmpQueue::resume_xcm_execution(Origin::root())
+		XcmpQueue::resume_xcm_execution(RuntimeOrigin::root())
+	}
+}
+
+pub struct NormalDmpHandler;
+impl DmpMessageHandler for NormalDmpHandler {
+	// This implementation makes messages be queued
+	// Since the limit is 0, messages are queued for next iteration
+	fn handle_dmp_messages(
+		iter: impl Iterator<Item = (RelayBlockNumber, Vec<u8>)>,
+		limit: Weight,
+	) -> Weight {
+		(if Migrations::should_pause_xcm() {
+			DmpQueue::handle_dmp_messages(iter, Weight::zero())
+		} else {
+			DmpQueue::handle_dmp_messages(iter, limit)
+		}) + <Runtime as frame_system::Config>::DbWeight::get().reads(1)
 	}
 }
 
@@ -1006,7 +1085,7 @@ impl DmpMessageHandler for MaintenanceDmpHandler {
 		iter: impl Iterator<Item = (RelayBlockNumber, Vec<u8>)>,
 		_limit: Weight,
 	) -> Weight {
-		DmpQueue::handle_dmp_messages(iter, 0)
+		DmpQueue::handle_dmp_messages(iter, Weight::zero())
 	}
 }
 
@@ -1015,7 +1094,7 @@ pub struct MaintenanceHooks;
 
 impl OnInitialize<BlockNumber> for MaintenanceHooks {
 	fn on_initialize(n: BlockNumber) -> Weight {
-		AllPalletsReversedWithSystemFirst::on_initialize(n)
+		AllPalletsWithSystem::on_initialize(n)
 	}
 }
 
@@ -1027,49 +1106,49 @@ impl OnInitialize<BlockNumber> for MaintenanceHooks {
 // we need to provide it here
 impl OnIdle<BlockNumber> for MaintenanceHooks {
 	fn on_idle(_n: BlockNumber, _max_weight: Weight) -> Weight {
-		0
+		Weight::zero()
 	}
 }
 
 impl OnRuntimeUpgrade for MaintenanceHooks {
 	fn on_runtime_upgrade() -> Weight {
-		AllPalletsReversedWithSystemFirst::on_runtime_upgrade()
+		AllPalletsWithSystem::on_runtime_upgrade()
 	}
 	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade() -> Result<(), &'static str> {
-		AllPalletsReversedWithSystemFirst::pre_upgrade()
+	fn pre_upgrade() -> Result<Vec<u8>, &'static str> {
+		AllPalletsWithSystem::pre_upgrade()
 	}
 
 	#[cfg(feature = "try-runtime")]
-	fn post_upgrade() -> Result<(), &'static str> {
-		AllPalletsReversedWithSystemFirst::post_upgrade()
+	fn post_upgrade(state: Vec<u8>) -> Result<(), &'static str> {
+		AllPalletsWithSystem::post_upgrade(state)
 	}
 }
 
 impl OnFinalize<BlockNumber> for MaintenanceHooks {
 	fn on_finalize(n: BlockNumber) {
-		AllPalletsReversedWithSystemFirst::on_finalize(n)
+		AllPalletsWithSystem::on_finalize(n)
 	}
 }
 
 impl OffchainWorker<BlockNumber> for MaintenanceHooks {
 	fn offchain_worker(n: BlockNumber) {
-		AllPalletsReversedWithSystemFirst::offchain_worker(n)
+		AllPalletsWithSystem::offchain_worker(n)
 	}
 }
 
 impl pallet_maintenance_mode::Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type NormalCallFilter = NormalFilter;
 	type MaintenanceCallFilter = MaintenanceFilter;
 	type MaintenanceOrigin =
 		pallet_collective::EnsureProportionAtLeast<AccountId, TechCommitteeInstance, 2, 3>;
 	type XcmExecutionManager = XcmExecutionManager;
-	type NormalDmpHandler = DmpQueue;
+	type NormalDmpHandler = NormalDmpHandler;
 	type MaintenanceDmpHandler = MaintenanceDmpHandler;
-	// We use AllPalletsReversedWithSystemFirst because we dont want to change the hooks in normal
+	// We use AllPalletsWithSystem because we dont want to change the hooks in normal
 	// operation
-	type NormalExecutiveHooks = AllPalletsReversedWithSystemFirst;
+	type NormalExecutiveHooks = AllPalletsWithSystem;
 	type MaintenanceExecutiveHooks = MaintenanceHooks;
 }
 
@@ -1081,12 +1160,17 @@ parameter_types! {
 	pub OrbiterReserveIdentifier: [u8; 4] = [b'o', b'r', b'b', b'i'];
 }
 
+type AddCollatorOrigin =
+	EitherOfDiverse<EnsureRoot<AccountId>, governance::custom_origins::GeneralAdmin>;
+type DelCollatorOrigin =
+	EitherOfDiverse<EnsureRoot<AccountId>, governance::custom_origins::GeneralAdmin>;
+
 impl pallet_moonbeam_orbiters::Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type AccountLookup = AuthorMapping;
-	type AddCollatorOrigin = EnsureRoot<AccountId>;
+	type AddCollatorOrigin = AddCollatorOrigin;
 	type Currency = Balances;
-	type DelCollatorOrigin = EnsureRoot<AccountId>;
+	type DelCollatorOrigin = DelCollatorOrigin;
 	/// Maximum number of orbiters per collator
 	type MaxPoolSize = ConstU32<8>;
 	/// Maximum number of round to keep on storage
@@ -1142,7 +1226,7 @@ impl pallet_randomness::GetBabeData<u64, Option<Hash>> for BabeDataGetter {
 }
 
 impl pallet_randomness::Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type AddressMapping = moonbeam_runtime_common::IntoAddressMapping;
 	type Currency = Balances;
 	type BabeDataGetter = BabeDataGetter;
@@ -1155,6 +1239,8 @@ impl pallet_randomness::Config for Runtime {
 	type EpochExpirationDelay = ConstU64<10_000>;
 }
 
+impl pallet_root_testing::Config for Runtime {}
+
 construct_runtime! {
 	pub enum Runtime where
 		Block = Block,
@@ -1164,13 +1250,14 @@ construct_runtime! {
 		// System support stuff.
 		System: frame_system::{Pallet, Call, Storage, Config, Event<T>} = 0,
 		ParachainSystem: cumulus_pallet_parachain_system::{Pallet, Call, Storage, Inherent, Event<T>} = 1,
-		RandomnessCollectiveFlip: pallet_randomness_collective_flip::{Pallet, Storage} = 2,
+		// Previously 2: pallet_randomness_collective_flip
 		Timestamp: pallet_timestamp::{Pallet, Call, Storage, Inherent} = 3,
 		ParachainInfo: parachain_info::{Pallet, Storage, Config} = 4,
+		RootTesting: pallet_root_testing::{Pallet, Call, Storage} = 5,
 
 		// Monetary stuff.
 		Balances: pallet_balances::{Pallet, Call, Storage, Config<T>, Event<T>} = 10,
-		TransactionPayment: pallet_transaction_payment::{Pallet, Storage, Event<T>} = 11,
+		TransactionPayment: pallet_transaction_payment::{Pallet, Storage, Config, Event<T>} = 11,
 
 		// Consensus support.
 		ParachainStaking: pallet_parachain_staking::{Pallet, Call, Storage, Event<T>, Config<T>} = 20,
@@ -1184,7 +1271,7 @@ construct_runtime! {
 		Proxy: pallet_proxy::{Pallet, Call, Storage, Event<T>} = 31,
 		MaintenanceMode: pallet_maintenance_mode::{Pallet, Call, Config, Storage, Event} = 32,
 		Identity: pallet_identity::{Pallet, Call, Storage, Event<T>} = 33,
-		Migrations: pallet_migrations::{Pallet, Storage, Config, Event<T>} = 34,
+		Migrations: pallet_migrations::{Pallet, Call, Storage, Config, Event<T>} = 34,
 		ProxyGenesisCompanion: pallet_proxy_genesis_companion::{Pallet, Config<T>} = 35,
 
 		// Sudo was previously index 40
@@ -1193,11 +1280,15 @@ construct_runtime! {
 		EthereumChainId: pallet_ethereum_chain_id::{Pallet, Storage, Config} = 50,
 		EVM: pallet_evm::{Pallet, Config, Call, Storage, Event<T>} = 51,
 		Ethereum: pallet_ethereum::{Pallet, Call, Storage, Event, Origin, Config} = 52,
-		BaseFee: pallet_base_fee::{Pallet, Call, Storage, Config<T>, Event} = 53,
 
 		// Governance stuff.
 		Scheduler: pallet_scheduler::{Pallet, Storage, Event<T>, Call} = 60,
 		Democracy: pallet_democracy::{Pallet, Storage, Config<T>, Event<T>, Call} = 61,
+		Preimage: pallet_preimage::{Pallet, Call, Storage, Event<T>} = 62,
+		ConvictionVoting: pallet_conviction_voting::{Pallet, Call, Storage, Event<T>} = 63,
+		Referenda: pallet_referenda::{Pallet, Call, Storage, Event<T>} = 64,
+		Origins: governance::custom_origins::{Origin} = 65,
+		Whitelist: pallet_whitelist::{Pallet, Call, Storage, Event<T>} = 66,
 
 		// Council stuff.
 		CouncilCollective:
@@ -1206,6 +1297,8 @@ construct_runtime! {
 			pallet_collective::<Instance2>::{Pallet, Call, Storage, Event<T>, Origin<T>, Config<T>} = 71,
 		TreasuryCouncilCollective:
 			pallet_collective::<Instance3>::{Pallet, Call, Storage, Event<T>, Origin<T>, Config<T>} = 72,
+		OpenTechCommitteeCollective:
+			pallet_collective::<Instance4>::{Pallet, Call, Storage, Event<T>, Origin<T>, Config<T>} = 73,
 
 		// Treasury stuff.
 		Treasury: pallet_treasury::{Pallet, Storage, Config, Event<T>, Call} = 80,
@@ -1238,6 +1331,7 @@ pub type BlockId = generic::BlockId<Block>;
 
 /// The SignedExtension to the basic transaction logic.
 pub type SignedExtra = (
+	frame_system::CheckNonZeroSender<Runtime>,
 	frame_system::CheckSpecVersion<Runtime>,
 	frame_system::CheckTxVersion<Runtime>,
 	frame_system::CheckGenesis<Runtime>,
@@ -1248,9 +1342,10 @@ pub type SignedExtra = (
 );
 /// Unchecked extrinsic type as expected by this runtime.
 pub type UncheckedExtrinsic =
-	fp_self_contained::UncheckedExtrinsic<Address, Call, Signature, SignedExtra>;
+	fp_self_contained::UncheckedExtrinsic<Address, RuntimeCall, Signature, SignedExtra>;
 /// Extrinsic type that has already been checked.
-pub type CheckedExtrinsic = fp_self_contained::CheckedExtrinsic<AccountId, Call, SignedExtra, H160>;
+pub type CheckedExtrinsic =
+	fp_self_contained::CheckedExtrinsic<AccountId, RuntimeCall, SignedExtra, H160>;
 /// Executive: handles dispatch to the various pallets.
 pub type Executive = frame_executive::Executive<
 	Runtime,
@@ -1305,14 +1400,14 @@ moonbeam_runtime_common::impl_runtime_apis_plus_common! {
 			// according to gas price from pallet ethereum. If it is any other kind of transaction,
 			// we modify its priority.
 			Ok(match &xt.0.function {
-				Call::Ethereum(transact { .. }) => intermediate_valid,
+				RuntimeCall::Ethereum(transact { .. }) => intermediate_valid,
 				_ if dispatch_info.class != DispatchClass::Normal => intermediate_valid,
 				_ => {
 					let tip = match xt.0.signature {
 						None => 0,
 						Some((_, _, ref signed_extra)) => {
 							// Yuck, this depends on the index of charge transaction in Signed Extra
-							let charge_transaction = &signed_extra.6;
+							let charge_transaction = &signed_extra.7;
 							charge_transaction.tip()
 						}
 					};
@@ -1439,7 +1534,6 @@ mod tests {
 			5_u8
 		);
 		assert_eq!(STORAGE_BYTE_FEE, Balance::from(100 * MICROMOVR));
-		assert_eq!(FixedGasPrice::min_gas_price().0, (1 * GIGAWEI).into());
 
 		// democracy minimums
 		assert_eq!(
@@ -1447,7 +1541,7 @@ mod tests {
 			Balance::from(4 * MOVR)
 		);
 		assert_eq!(
-			get!(pallet_democracy, PreimageByteDeposit, u128),
+			get!(pallet_preimage, ByteDeposit, u128),
 			Balance::from(100 * MICROMOVR)
 		);
 		assert_eq!(
@@ -1472,11 +1566,11 @@ mod tests {
 		// staking minimums
 		assert_eq!(
 			get!(pallet_parachain_staking, MinCollatorStk, u128),
-			Balance::from(1 * KILOMOVR)
+			Balance::from(10 * KILOMOVR)
 		);
 		assert_eq!(
 			get!(pallet_parachain_staking, MinCandidateStk, u128),
-			Balance::from(500 * MOVR)
+			Balance::from(10 * KILOMOVR)
 		);
 		assert_eq!(
 			get!(pallet_parachain_staking, MinDelegation, u128),
@@ -1535,5 +1629,14 @@ mod tests {
 			),
 			50
 		);
+	}
+
+	#[test]
+	fn configured_base_extrinsic_weight_is_evm_compatible() {
+		let min_ethereum_transaction_weight = WeightPerGas::get() * 21_000;
+		let base_extrinsic = <Runtime as frame_system::Config>::BlockWeights::get()
+			.get(frame_support::dispatch::DispatchClass::Normal)
+			.base_extrinsic;
+		assert!(base_extrinsic.ref_time() <= min_ethereum_transaction_weight.ref_time());
 	}
 }

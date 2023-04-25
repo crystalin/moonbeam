@@ -25,8 +25,8 @@ use crate::listeners::call_list::Listener;
 use crate::types::serialization::*;
 use serde::Serialize;
 
-use codec::{Decode, Encode};
 use ethereum_types::{H160, U256};
+use parity_scale_codec::{Decode, Encode};
 use sp_std::{cmp::Ordering, vec::Vec};
 
 pub struct Formatter;
@@ -206,7 +206,12 @@ impl super::ResponseFormatter for Formatter {
 										trace_address: Some(b),
 										..
 									}),
-								) => &b[..] == &a[0..a.len() - 1],
+								) => {
+									&b[..]
+										== a.get(0..a.len() - 1).expect(
+											"non-root element while traversing trace result",
+										)
+								}
 								_ => unreachable!(),
 							}) {
 						// Remove `trace_address` from result.

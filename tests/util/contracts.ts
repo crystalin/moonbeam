@@ -16,9 +16,11 @@ export interface Compiled {
 
 export function getAllContracts(): string[] {
   const contractsPath = path.join(__dirname, `../contracts/compiled/`);
-  const contracts = fs.readdirSync(contractsPath);
+  const contracts = fs.readdirSync(contractsPath, { withFileTypes: true });
   // Register all the contract code
-  return contracts.map((contract) => path.basename(contract, ".json"));
+  return contracts
+    .filter((dirent) => dirent.isFile())
+    .map((contract) => path.basename(contract.name, ".json"));
 }
 
 const contracts: { [name: string]: Compiled } = {};
@@ -52,7 +54,7 @@ export async function deployContractManualSeal(
       from: account,
       data: contractByteCode,
       value: "0x00",
-      gasPrice: 1_000_000_000,
+      gasPrice: 10_000_000_000,
       gas: "0x100000",
     },
     privateKey

@@ -17,7 +17,6 @@
 //! Precompile to interact with pallet_balances instances using the ERC20 interface standard.
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![cfg_attr(test, feature(assert_matches))]
 
 use fp_evm::PrecompileHandle;
 use frame_support::{
@@ -184,9 +183,9 @@ where
 	Metadata: Erc20Metadata,
 	Instance: InstanceToPrefix + 'static,
 	Runtime: pallet_balances::Config<Instance> + pallet_evm::Config + pallet_timestamp::Config,
-	Runtime::Call: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
-	Runtime::Call: From<pallet_balances::Call<Runtime, Instance>>,
-	<Runtime::Call as Dispatchable>::Origin: From<Option<Runtime::AccountId>>,
+	Runtime::RuntimeCall: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
+	Runtime::RuntimeCall: From<pallet_balances::Call<Runtime, Instance>>,
+	<Runtime::RuntimeCall as Dispatchable>::RuntimeOrigin: From<Option<Runtime::AccountId>>,
 	BalanceOf<Runtime, Instance>: TryFrom<U256> + Into<U256>,
 	<Runtime as pallet_timestamp::Config>::Moment: Into<U256>,
 {
@@ -256,7 +255,7 @@ where
 			SELECTOR_LOG_APPROVAL,
 			handle.context().caller,
 			spender,
-			EvmDataWriter::new().write(value).build(),
+			solidity::encode_event_data(value),
 		)
 		.record(handle)?;
 
@@ -292,7 +291,7 @@ where
 			SELECTOR_LOG_TRANSFER,
 			handle.context().caller,
 			to,
-			EvmDataWriter::new().write(value).build(),
+			solidity::encode_event_data(value),
 		)
 		.record(handle)?;
 
@@ -355,7 +354,7 @@ where
 			SELECTOR_LOG_TRANSFER,
 			from,
 			to,
-			EvmDataWriter::new().write(value).build(),
+			solidity::encode_event_data(value),
 		)
 		.record(handle)?;
 
@@ -414,9 +413,7 @@ where
 			handle.context().address,
 			SELECTOR_LOG_DEPOSIT,
 			handle.context().caller,
-			EvmDataWriter::new()
-				.write(handle.context().apparent_value)
-				.build(),
+			solidity::encode_event_data(handle.context().apparent_value),
 		)
 		.record(handle)?;
 
@@ -446,7 +443,7 @@ where
 			handle.context().address,
 			SELECTOR_LOG_WITHDRAWAL,
 			handle.context().caller,
-			EvmDataWriter::new().write(value).build(),
+			solidity::encode_event_data(value),
 		)
 		.record(handle)?;
 

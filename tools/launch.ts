@@ -158,8 +158,28 @@ const parachains: { [name: string]: ParachainConfig } = {
     chain: "moonbase-local",
     docker: "purestake/moonbeam:v0.26.0",
   },
+  "moonbase-0.27.0": {
+    relay: "rococo-9290",
+    chain: "moonbase-local",
+    docker: "purestake/moonbeam:v0.27.0",
+  },
+  "moonbase-0.28.0": {
+    relay: "rococo-9320",
+    chain: "moonbase-local",
+    docker: "purestake/moonbeam:v0.28.0",
+  },
+  "moonbase-0.29.0": {
+    relay: "rococo-9320",
+    chain: "moonbase-local",
+    docker: "purestake/moonbeam:v0.29.0",
+  },
+  "moonbase-0.30.0": {
+    relay: "rococo-9370",
+    chain: "moonbase-local",
+    docker: "purestake/moonbeam:v0.30.0",
+  },
   local: {
-    relay: "rococo-9230",
+    relay: "rococo-9370",
     chain: "moonbase-local",
     binary: "../target/release/moonbeam",
   },
@@ -230,6 +250,14 @@ const relays: { [name: string]: NetworkConfig } = {
   "westend-9040": {
     docker: "purestake/moonbase-relay-testnet:sha-2f28561a",
     chain: "westend-local",
+  },
+  "rococo-9320": {
+    docker: "purestake/moonbase-relay-testnet:sha-2bfbb4ad",
+    chain: "rococo-local",
+  },
+  "rococo-9370": {
+    docker: "purestake/moonbase-relay-testnet:sha-b4b818d8",
+    chain: "rococo-local",
   },
   local: {
     binary: "../../polkadot/target/release/polkadot",
@@ -366,7 +394,7 @@ async function start() {
       }
       // If it is an array, push the position at which we are
       else if (Array.isArray(argv["parachain-chain"])) {
-        parachainsChains.push(argv["parachain-chain"] || parachains[parachainName].chain);
+        parachainsChains.push(argv["parachain-chain"][i] || parachains[parachainName].chain);
       }
       // Else, push the value to the first parachain if it exists, else the default
       else {

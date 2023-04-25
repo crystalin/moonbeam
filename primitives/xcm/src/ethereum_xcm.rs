@@ -24,6 +24,15 @@ use parity_scale_codec::{Decode, Encode};
 use scale_info::TypeInfo;
 use sp_std::vec::Vec;
 
+// polkadot/blob/19f6665a6162e68cd2651f5fe3615d6676821f90/xcm/src/v3/mod.rs#L1193
+// Defensively we increase this value to allow UMP fragments through xcm-transactor to prepare our
+// runtime for a relay upgrade where the xcm instruction weights are not ZERO hardcoded. If that
+// happens stuff will break in our side.
+// Rationale behind the value: e.g. staking unbond will go above 32kb and thus
+// required_weight_at_most must be below overall weight but still above whatever value we decide to
+// set. For this reason we set here a value that makes sense for the overall weight.
+pub const DEFAULT_PROOF_SIZE: u64 = 128 * 1024;
+
 /// Max. allowed size of 65_536 bytes.
 pub const MAX_ETHEREUM_XCM_INPUT_SIZE: u32 = 2u32.pow(16);
 
@@ -95,20 +104,20 @@ pub struct EthereumXcmTransactionV2 {
 }
 
 pub trait XcmToEthereum {
-	fn into_transaction_v2(&self, nonce: U256) -> Option<TransactionV2>;
+	fn into_transaction_v2(&self, nonce: U256, chain_id: u64) -> Option<TransactionV2>;
 }
 
 impl XcmToEthereum for EthereumXcmTransaction {
-	fn into_transaction_v2(&self, nonce: U256) -> Option<TransactionV2> {
+	fn into_transaction_v2(&self, nonce: U256, chain_id: u64) -> Option<TransactionV2> {
 		match self {
-			EthereumXcmTransaction::V1(v1_tx) => v1_tx.into_transaction_v2(nonce),
-			EthereumXcmTransaction::V2(v2_tx) => v2_tx.into_transaction_v2(nonce),
+			EthereumXcmTransaction::V1(v1_tx) => v1_tx.into_transaction_v2(nonce, chain_id),
+			EthereumXcmTransaction::V2(v2_tx) => v2_tx.into_transaction_v2(nonce, chain_id),
 		}
 	}
 }
 
 impl XcmToEthereum for EthereumXcmTransactionV1 {
-	fn into_transaction_v2(&self, nonce: U256) -> Option<TransactionV2> {
+	fn into_transaction_v2(&self, nonce: U256, chain_id: u64) -> Option<TransactionV2> {
 		// We dont support creates for now
 		if self.action == TransactionAction::Create {
 			return None;
@@ -134,7 +143,7 @@ impl XcmToEthereum for EthereumXcmTransactionV1 {
 				if let Some(ref access_list) = self.access_list {
 					// Eip-2930
 					Some(TransactionV2::EIP2930(EIP2930Transaction {
-						chain_id: 0,
+						chain_id,
 						nonce,
 						gas_price,
 						gas_limit: self.gas_limit,
@@ -162,7 +171,7 @@ impl XcmToEthereum for EthereumXcmTransactionV1 {
 			(None, Some(max_fee)) => {
 				// Eip-1559
 				Some(TransactionV2::EIP1559(EIP1559Transaction {
-					chain_id: 0,
+					chain_id,
 					nonce,
 					max_fee_per_gas: max_fee,
 					max_priority_fee_per_gas: U256::zero(),
@@ -186,7 +195,7 @@ impl XcmToEthereum for EthereumXcmTransactionV1 {
 }
 
 impl XcmToEthereum for EthereumXcmTransactionV2 {
-	fn into_transaction_v2(&self, nonce: U256) -> Option<TransactionV2> {
+	fn into_transaction_v2(&self, nonce: U256, chain_id: u64) -> Option<TransactionV2> {
 		// We dont support creates for now
 		if self.action == TransactionAction::Create {
 			return None;
@@ -201,7 +210,7 @@ impl XcmToEthereum for EthereumXcmTransactionV2 {
 		};
 		// Eip-1559
 		Some(TransactionV2::EIP1559(EIP1559Transaction {
-			chain_id: 0,
+			chain_id,
 			nonce,
 			max_fee_per_gas: U256::zero(),
 			max_priority_fee_per_gas: U256::zero(),
@@ -251,7 +260,7 @@ mod tests {
 		};
 		let nonce = U256::zero();
 		let expected_tx = Some(TransactionV2::EIP1559(EIP1559Transaction {
-			chain_id: 0,
+			chain_id: 111,
 			nonce,
 			max_fee_per_gas: U256::zero(),
 			max_priority_fee_per_gas: U256::zero(),
@@ -265,7 +274,7 @@ mod tests {
 			s: H256::from_low_u64_be(1u64),
 		}));
 
-		assert_eq!(xcm_transaction.into_transaction_v2(nonce), expected_tx);
+		assert_eq!(xcm_transaction.into_transaction_v2(nonce, 111), expected_tx);
 	}
 
 	#[test]
@@ -293,7 +302,7 @@ mod tests {
 			signature: TransactionSignature::new(42, rs_id(), rs_id()).unwrap(),
 		}));
 
-		assert_eq!(xcm_transaction.into_transaction_v2(nonce), expected_tx);
+		assert_eq!(xcm_transaction.into_transaction_v2(nonce, 111), expected_tx);
 	}
 	#[test]
 	fn test_eip_2930_v1() {
@@ -322,7 +331,7 @@ mod tests {
 
 		let nonce = U256::zero();
 		let expected_tx = Some(TransactionV2::EIP2930(EIP2930Transaction {
-			chain_id: 0,
+			chain_id: 111,
 			nonce,
 			gas_price: U256::zero(),
 			gas_limit: U256::one(),
@@ -335,7 +344,7 @@ mod tests {
 			s: H256::from_low_u64_be(1u64),
 		}));
 
-		assert_eq!(xcm_transaction.into_transaction_v2(nonce), expected_tx);
+		assert_eq!(xcm_transaction.into_transaction_v2(nonce, 111), expected_tx);
 	}
 
 	#[test]
@@ -350,7 +359,7 @@ mod tests {
 		};
 		let nonce = U256::zero();
 		let expected_tx = Some(TransactionV2::EIP1559(EIP1559Transaction {
-			chain_id: 0,
+			chain_id: 111,
 			nonce,
 			max_fee_per_gas: U256::zero(),
 			max_priority_fee_per_gas: U256::zero(),
@@ -364,6 +373,6 @@ mod tests {
 			s: H256::from_low_u64_be(1u64),
 		}));
 
-		assert_eq!(xcm_transaction.into_transaction_v2(nonce), expected_tx);
+		assert_eq!(xcm_transaction.into_transaction_v2(nonce, 111), expected_tx);
 	}
 }

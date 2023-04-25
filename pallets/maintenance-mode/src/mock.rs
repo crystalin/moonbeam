@@ -55,7 +55,7 @@ construct_runtime!(
 
 parameter_types! {
 	pub const BlockHashCount: u32 = 250;
-	pub const MaximumBlockWeight: Weight = 1024;
+	pub const MaximumBlockWeight: Weight = Weight::from_ref_time(1024);
 	pub const MaximumBlockLength: u32 = 2 * 1024;
 	pub const AvailableBlockRatio: Perbill = Perbill::one();
 	pub const SS58Prefix: u8 = 42;
@@ -63,16 +63,16 @@ parameter_types! {
 impl frame_system::Config for Test {
 	type BaseCallFilter = MaintenanceMode;
 	type DbWeight = ();
-	type Origin = Origin;
+	type RuntimeOrigin = RuntimeOrigin;
 	type Index = u64;
 	type BlockNumber = BlockNumber;
-	type Call = Call;
+	type RuntimeCall = RuntimeCall;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
 	type AccountId = AccountId;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = sp_runtime::generic::Header<BlockNumber, BlakeTwo256>;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type BlockHashCount = BlockHashCount;
 	type Version = ();
 	type PalletInfo = PalletInfo;
@@ -89,8 +89,8 @@ impl frame_system::Config for Test {
 
 /// During maintenance mode we will not allow any calls.
 pub struct MaintenanceCallFilter;
-impl Contains<Call> for MaintenanceCallFilter {
-	fn contains(_: &Call) -> bool {
+impl Contains<RuntimeCall> for MaintenanceCallFilter {
+	fn contains(_: &RuntimeCall) -> bool {
 		false
 	}
 }
@@ -104,7 +104,7 @@ impl DmpMessageHandler for MaintenanceDmpHandler {
 		_iter: impl Iterator<Item = (RelayBlockNumber, Vec<u8>)>,
 		_limit: Weight,
 	) -> Weight {
-		return 1;
+		return Weight::from_ref_time(1);
 	}
 }
 
@@ -117,12 +117,12 @@ impl DmpMessageHandler for NormalDmpHandler {
 		_iter: impl Iterator<Item = (RelayBlockNumber, Vec<u8>)>,
 		_limit: Weight,
 	) -> Weight {
-		return 0;
+		Weight::zero()
 	}
 }
 
 impl mock_pallet_maintenance_hooks::Config for Test {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 }
 
 // Pallet to throw events, used to test maintenance mode hooks
@@ -132,7 +132,7 @@ pub mod mock_pallet_maintenance_hooks {
 
 	#[pallet::config]
 	pub trait Config: frame_system::Config {
-		type Event: From<Event> + IsType<<Self as frame_system::Config>::Event>;
+		type RuntimeEvent: From<Event> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 	}
 
 	#[pallet::pallet]
@@ -165,7 +165,7 @@ impl OnInitialize<BlockNumber> for MaintenanceHooks {
 		MockPalletMaintenanceHooks::deposit_event(
 			mock_pallet_maintenance_hooks::Event::MaintenanceOnInitialize,
 		);
-		return 1;
+		Weight::from_ref_time(1)
 	}
 }
 
@@ -174,7 +174,7 @@ impl OnIdle<BlockNumber> for MaintenanceHooks {
 		MockPalletMaintenanceHooks::deposit_event(
 			mock_pallet_maintenance_hooks::Event::MaintenanceOnIdle,
 		);
-		return 1;
+		Weight::from_ref_time(1)
 	}
 }
 
@@ -183,7 +183,7 @@ impl OnRuntimeUpgrade for MaintenanceHooks {
 		MockPalletMaintenanceHooks::deposit_event(
 			mock_pallet_maintenance_hooks::Event::MaintenanceOnRuntimeUpgrade,
 		);
-		return 1;
+		Weight::from_ref_time(1)
 	}
 }
 
@@ -210,7 +210,7 @@ impl OnInitialize<BlockNumber> for NormalHooks {
 		MockPalletMaintenanceHooks::deposit_event(
 			mock_pallet_maintenance_hooks::Event::NormalOnInitialize,
 		);
-		return 0;
+		Weight::zero()
 	}
 }
 
@@ -219,7 +219,7 @@ impl OnIdle<BlockNumber> for NormalHooks {
 		MockPalletMaintenanceHooks::deposit_event(
 			mock_pallet_maintenance_hooks::Event::NormalOnIdle,
 		);
-		return 0;
+		Weight::zero()
 	}
 }
 
@@ -228,8 +228,7 @@ impl OnRuntimeUpgrade for NormalHooks {
 		MockPalletMaintenanceHooks::deposit_event(
 			mock_pallet_maintenance_hooks::Event::NormalOnRuntimeUpgrade,
 		);
-
-		return 0;
+		Weight::zero()
 	}
 }
 
@@ -250,7 +249,7 @@ impl OffchainWorker<BlockNumber> for NormalHooks {
 }
 
 impl Config for Test {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type NormalCallFilter = Everything;
 	type MaintenanceCallFilter = MaintenanceCallFilter;
 	type MaintenanceOrigin = EnsureRoot<AccountId>;
@@ -307,7 +306,7 @@ pub(crate) fn events() -> Vec<pallet_maintenance_mode::Event> {
 		.into_iter()
 		.map(|r| r.event)
 		.filter_map(|e| {
-			if let Event::MaintenanceMode(inner) = e {
+			if let RuntimeEvent::MaintenanceMode(inner) = e {
 				Some(inner)
 			} else {
 				None
@@ -321,7 +320,7 @@ pub(crate) fn mock_events() -> Vec<mock_pallet_maintenance_hooks::Event> {
 		.into_iter()
 		.map(|r| r.event)
 		.filter_map(|e| {
-			if let Event::MockPalletMaintenanceHooks(inner) = e {
+			if let RuntimeEvent::MockPalletMaintenanceHooks(inner) = e {
 				Some(inner)
 			} else {
 				None

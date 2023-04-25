@@ -17,7 +17,6 @@
 //! Precompile to call parachain-staking runtime methods via the EVM
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![cfg_attr(test, feature(assert_matches))]
 
 #[cfg(test)]
 mod mock;
@@ -26,6 +25,7 @@ mod tests;
 
 use fp_evm::PrecompileHandle;
 use frame_support::dispatch::{Dispatchable, GetDispatchInfo, PostDispatchInfo};
+use frame_support::sp_runtime::Percent;
 use frame_support::traits::{Currency, Get};
 use pallet_evm::AddressMapping;
 use precompile_utils::prelude::*;
@@ -50,10 +50,10 @@ impl<Runtime> ParachainStakingPrecompile<Runtime>
 where
 	Runtime: pallet_parachain_staking::Config + pallet_evm::Config,
 	Runtime::AccountId: Into<H160>,
-	Runtime::Call: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
-	<Runtime::Call as Dispatchable>::Origin: From<Option<Runtime::AccountId>>,
-	Runtime::Call: From<pallet_parachain_staking::Call<Runtime>>,
-	BalanceOf<Runtime>: TryFrom<U256> + Into<U256> + EvmData,
+	Runtime::RuntimeCall: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
+	<Runtime::RuntimeCall as Dispatchable>::RuntimeOrigin: From<Option<Runtime::AccountId>>,
+	Runtime::RuntimeCall: From<pallet_parachain_staking::Call<Runtime>>,
+	BalanceOf<Runtime>: TryFrom<U256> + Into<U256> + solidity::Codec,
 {
 	// Constants
 	#[precompile::public("minDelegation()")]
@@ -75,14 +75,27 @@ where
 	// Storage Getters
 	#[precompile::public("points(uint256)")]
 	#[precompile::view]
-	fn points(
-		handle: &mut impl PrecompileHandle,
-		round: SolidityConvert<U256, u32>,
-	) -> EvmResult<u32> {
+	fn points(handle: &mut impl PrecompileHandle, round: Convert<U256, u32>) -> EvmResult<u32> {
 		let round = round.converted();
 		// Fetch info.
 		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
 		let points: u32 = pallet_parachain_staking::Pallet::<Runtime>::points(round);
+
+		Ok(points)
+	}
+
+	#[precompile::public("awardedPoints(uint32,address)")]
+	#[precompile::view]
+	fn awarded_points(
+		handle: &mut impl PrecompileHandle,
+		round: u32,
+		candidate: Address,
+	) -> EvmResult<u32> {
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+
+		let candidate = Runtime::AddressMapping::into_account_id(candidate.0);
+
+		let points = <pallet_parachain_staking::Pallet<Runtime>>::awarded_pts(&round, &candidate);
 
 		Ok(points)
 	}
@@ -145,6 +158,23 @@ where
 		Ok(result)
 	}
 
+	#[precompile::public("candidateAutoCompoundingDelegationCount(address)")]
+	#[precompile::view]
+	fn candidate_auto_compounding_delegation_count(
+		handle: &mut impl PrecompileHandle,
+		candidate: Address,
+	) -> EvmResult<u32> {
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+
+		let candidate = Runtime::AddressMapping::into_account_id(candidate.0);
+
+		let count =
+			<pallet_parachain_staking::Pallet<Runtime>>::auto_compounding_delegations(&candidate)
+				.len() as u32;
+
+		Ok(count)
+	}
+
 	#[precompile::public("delegatorDelegationCount(address)")]
 	#[precompile::public("delegator_delegation_count(address)")]
 	#[precompile::view]
@@ -195,7 +225,63 @@ where
 		Ok(selected_candidates)
 	}
 
+	#[precompile::public("delegationAmount(address,address)")]
+	#[precompile::view]
+	fn delegation_amount(
+		handle: &mut impl PrecompileHandle,
+		delegator: Address,
+		candidate: Address,
+	) -> EvmResult<U256> {
+		// Fetch info.
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+		let (candidate, delegator) = (
+			Runtime::AddressMapping::into_account_id(candidate.0),
+			Runtime::AddressMapping::into_account_id(delegator.0),
+		);
+		let amount = pallet_parachain_staking::Pallet::<Runtime>::delegator_state(&delegator)
+			.and_then(|state| {
+				state
+					.delegations
+					.0
+					.into_iter()
+					.find(|b| b.owner == candidate)
+			})
+			.map_or(
+				U256::zero(),
+				|pallet_parachain_staking::Bond { amount, .. }| amount.into(),
+			);
+
+		Ok(amount)
+	}
+
 	// Role Verifiers
+	#[precompile::public("isInTopDelegations(address,address)")]
+	#[precompile::view]
+	fn is_in_top_delegations(
+		handle: &mut impl PrecompileHandle,
+		delegator: Address,
+		candidate: Address,
+	) -> EvmResult<bool> {
+		let (candidate, delegator) = (
+			Runtime::AddressMapping::into_account_id(candidate.0),
+			Runtime::AddressMapping::into_account_id(delegator.0),
+		);
+
+		// Fetch info.
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+		let is_in_top_delegations = pallet_parachain_staking::Pallet::<Runtime>::top_delegations(
+			&candidate,
+		)
+		.map_or(false, |delegations| {
+			delegations
+				.delegations
+				.into_iter()
+				.any(|b| b.owner == delegator)
+		});
+
+		Ok(is_in_top_delegations)
+	}
+
 	#[precompile::public("isDelegator(address)")]
 	#[precompile::public("is_delegator(address)")]
 	#[precompile::view]
@@ -322,6 +408,26 @@ where
 		Ok(pending)
 	}
 
+	#[precompile::public("delegationAutoCompound(address,address)")]
+	#[precompile::view]
+	fn delegation_auto_compound(
+		handle: &mut impl PrecompileHandle,
+		delegator: Address,
+		candidate: Address,
+	) -> EvmResult<u8> {
+		let delegator = Runtime::AddressMapping::into_account_id(delegator.0);
+		let candidate = Runtime::AddressMapping::into_account_id(candidate.0);
+
+		// Fetch info.
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+
+		let value = <pallet_parachain_staking::Pallet<Runtime>>::delegation_auto_compound(
+			&candidate, &delegator,
+		);
+
+		Ok(value.deconstruct())
+	}
+
 	// Runtime Methods (dispatchables)
 
 	#[precompile::public("joinCandidates(uint256,uint256)")]
@@ -329,7 +435,7 @@ where
 	fn join_candidates(
 		handle: &mut impl PrecompileHandle,
 		amount: U256,
-		candidate_count: SolidityConvert<U256, u32>,
+		candidate_count: Convert<U256, u32>,
 	) -> EvmResult {
 		let amount = Self::u256_to_amount(amount).in_field("amount")?;
 		let candidate_count = candidate_count.converted();
@@ -351,7 +457,7 @@ where
 	#[precompile::public("schedule_leave_candidates(uint256)")]
 	fn schedule_leave_candidates(
 		handle: &mut impl PrecompileHandle,
-		candidate_count: SolidityConvert<U256, u32>,
+		candidate_count: Convert<U256, u32>,
 	) -> EvmResult {
 		let candidate_count = candidate_count.converted();
 
@@ -372,7 +478,7 @@ where
 	fn execute_leave_candidates(
 		handle: &mut impl PrecompileHandle,
 		candidate: Address,
-		candidate_count: SolidityConvert<U256, u32>,
+		candidate_count: Convert<U256, u32>,
 	) -> EvmResult {
 		let candidate_count = candidate_count.converted();
 		let candidate = Runtime::AddressMapping::into_account_id(candidate.0);
@@ -394,7 +500,7 @@ where
 	#[precompile::public("cancel_leave_candidates(uint256)")]
 	fn cancel_leave_candidates(
 		handle: &mut impl PrecompileHandle,
-		candidate_count: SolidityConvert<U256, u32>,
+		candidate_count: Convert<U256, u32>,
 	) -> EvmResult {
 		let candidate_count = candidate_count.converted();
 
@@ -502,8 +608,8 @@ where
 		handle: &mut impl PrecompileHandle,
 		candidate: Address,
 		amount: U256,
-		candidate_delegation_count: SolidityConvert<U256, u32>,
-		delegator_delegation_count: SolidityConvert<U256, u32>,
+		candidate_delegation_count: Convert<U256, u32>,
+		delegator_delegation_count: Convert<U256, u32>,
 	) -> EvmResult {
 		let amount = Self::u256_to_amount(amount).in_field("amount")?;
 		let candidate_delegation_count = candidate_delegation_count.converted();
@@ -517,6 +623,50 @@ where
 			candidate,
 			amount,
 			candidate_delegation_count,
+			delegation_count: delegator_delegation_count,
+		};
+
+		// Dispatch call (if enough gas).
+		RuntimeHelper::<Runtime>::try_dispatch(handle, Some(origin).into(), call)?;
+
+		Ok(())
+	}
+
+	#[precompile::public("delegateWithAutoCompound(address,uint256,uint8,uint256,uint256,uint256)")]
+	fn delegate_with_auto_compound(
+		handle: &mut impl PrecompileHandle,
+		candidate: Address,
+		amount: U256,
+		auto_compound: u8,
+		candidate_delegation_count: Convert<U256, u32>,
+		candidate_auto_compounding_delegation_count: Convert<U256, u32>,
+		delegator_delegation_count: Convert<U256, u32>,
+	) -> EvmResult {
+		if auto_compound > 100 {
+			return Err(
+				RevertReason::custom("Must be an integer between 0 and 100 included")
+					.in_field("auto_compound")
+					.into(),
+			);
+		}
+
+		let amount = Self::u256_to_amount(amount).in_field("amount")?;
+		let auto_compound = Percent::from_percent(auto_compound);
+		let candidate_delegation_count = candidate_delegation_count.converted();
+		let candidate_auto_compounding_delegation_count =
+			candidate_auto_compounding_delegation_count.converted();
+		let delegator_delegation_count = delegator_delegation_count.converted();
+
+		let candidate = Runtime::AddressMapping::into_account_id(candidate.0);
+
+		// Build call with origin.
+		let origin = Runtime::AddressMapping::into_account_id(handle.context().caller);
+		let call = pallet_parachain_staking::Call::<Runtime>::delegate_with_auto_compound {
+			candidate,
+			amount,
+			auto_compound,
+			candidate_delegation_count,
+			candidate_auto_compounding_delegation_count,
 			delegation_count: delegator_delegation_count,
 		};
 
@@ -546,7 +696,7 @@ where
 	fn execute_leave_delegators(
 		handle: &mut impl PrecompileHandle,
 		delegator: Address,
-		delegator_delegation_count: SolidityConvert<U256, u32>,
+		delegator_delegation_count: Convert<U256, u32>,
 	) -> EvmResult {
 		let delegator = Runtime::AddressMapping::into_account_id(delegator.0);
 		let delegator_delegation_count = delegator_delegation_count.converted();
@@ -682,6 +832,78 @@ where
 		RuntimeHelper::<Runtime>::try_dispatch(handle, Some(origin).into(), call)?;
 
 		Ok(())
+	}
+
+	#[precompile::public("setAutoCompound(address,uint8,uint256,uint256)")]
+	fn set_auto_compound(
+		handle: &mut impl PrecompileHandle,
+		candidate: Address,
+		value: u8,
+		candidate_auto_compounding_delegation_count: Convert<U256, u32>,
+		delegator_delegation_count: Convert<U256, u32>,
+	) -> EvmResult {
+		if value > 100 {
+			return Err(
+				RevertReason::custom("Must be an integer between 0 and 100 included")
+					.in_field("value")
+					.into(),
+			);
+		}
+
+		let value = Percent::from_percent(value);
+		let candidate_auto_compounding_delegation_count_hint =
+			candidate_auto_compounding_delegation_count.converted();
+		let delegation_count_hint = delegator_delegation_count.converted();
+
+		let candidate = Runtime::AddressMapping::into_account_id(candidate.0);
+
+		// Build call with origin.
+		let origin = Runtime::AddressMapping::into_account_id(handle.context().caller);
+		let call = pallet_parachain_staking::Call::<Runtime>::set_auto_compound {
+			candidate,
+			value,
+			candidate_auto_compounding_delegation_count_hint,
+			delegation_count_hint,
+		};
+
+		// Dispatch call (if enough gas).
+		RuntimeHelper::<Runtime>::try_dispatch(handle, Some(origin).into(), call)?;
+
+		Ok(())
+	}
+
+	#[precompile::public("getDelegatorTotalStaked(address)")]
+	#[precompile::view]
+	fn get_delegator_total_staked(
+		handle: &mut impl PrecompileHandle,
+		delegator: Address,
+	) -> EvmResult<U256> {
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+
+		let delegator = Runtime::AddressMapping::into_account_id(delegator.0);
+
+		let amount = <pallet_parachain_staking::Pallet<Runtime>>::delegator_state(&delegator)
+			.map(|state| state.total)
+			.unwrap_or_default();
+
+		Ok(amount.into())
+	}
+
+	#[precompile::public("getCandidateTotalCounted(address)")]
+	#[precompile::view]
+	fn get_candidate_total_counted(
+		handle: &mut impl PrecompileHandle,
+		candidate: Address,
+	) -> EvmResult<U256> {
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+
+		let candidate = Runtime::AddressMapping::into_account_id(candidate.0);
+
+		let amount = <pallet_parachain_staking::Pallet<Runtime>>::candidate_info(&candidate)
+			.map(|state| state.total_counted)
+			.unwrap_or_default();
+
+		Ok(amount.into())
 	}
 
 	fn u256_to_amount(value: U256) -> MayRevert<BalanceOf<Runtime>> {

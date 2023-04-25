@@ -15,635 +15,89 @@
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
 
 //! # Migrations
+//!
+//! This module acts as a registry where each migration is defined. Each migration should implement
+//! the "Migration" trait declared in the pallet-migrations crate.
 
-#[cfg(feature = "try-runtime")]
-use frame_support::traits::OnRuntimeUpgradeHelpersExt;
 use frame_support::{
 	dispatch::GetStorageVersion,
-	storage::migration::get_storage_value,
-	traits::{Get, OnRuntimeUpgrade, PalletInfoAccess},
+	traits::{Hash as PreimageHash, OnRuntimeUpgrade, PalletInfoAccess},
 	weights::Weight,
 };
-use pallet_asset_manager::{
-	migrations::{
-		ChangeStateminePrefixes, PopulateAssetTypeIdStorage, PopulateSupportedFeePaymentAssets,
-		UnitsWithAssetType,
-	},
-	Config as AssetManagerConfig,
-};
-use pallet_author_mapping::{
-	migrations::{AddAccountIdToNimbusLookup, AddKeysToRegistrationInfo},
-	Config as AuthorMappingConfig,
-};
-use pallet_author_slot_filter::migration::EligibleRatioToEligiblityCount;
 use pallet_author_slot_filter::Config as AuthorSlotFilterConfig;
-use pallet_base_fee::Config as BaseFeeConfig;
 use pallet_migrations::{GetMigrations, Migration};
-use pallet_parachain_staking::{
-	migrations::{
-		PatchIncorrectDelegationSums, PurgeStaleStorage,
-		SplitDelegatorStateIntoDelegationScheduledRequests,
-	},
-	Config as ParachainStakingConfig,
-};
-use pallet_xcm_transactor::{
-	migrations::TransactSignedWeightAndFeePerSecond, Config as XcmTransactorConfig,
-};
-use sp_runtime::Permill;
 use sp_std::{marker::PhantomData, prelude::*};
-use xcm::latest::MultiLocation;
 
-/// This module acts as a registry where each migration is defined. Each migration should implement
-/// the "Migration" trait declared in the pallet-migrations crate.
-
-/// A moonbeam migration wrapping the similarly named migration in pallet-author-mapping
-pub struct AuthorMappingAddAccountIdToNimbusLookup<T>(PhantomData<T>);
-impl<T: AuthorMappingConfig> Migration for AuthorMappingAddAccountIdToNimbusLookup<T> {
-	fn friendly_name(&self) -> &str {
-		"MM_Author_Mapping_AddAccountIdToNimbusLookup"
-	}
-
-	fn migrate(&self, _available_weight: Weight) -> Weight {
-		AddAccountIdToNimbusLookup::<T>::on_runtime_upgrade()
-	}
-
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		AddAccountIdToNimbusLookup::<T>::pre_upgrade()
-	}
-
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		AddAccountIdToNimbusLookup::<T>::post_upgrade()
-	}
-}
-
-/// A moonbeam migration wrapping the similarly named migration in pallet-author-mapping
-pub struct AuthorMappingAddKeysToRegistrationInfo<T>(PhantomData<T>);
-impl<T: AuthorMappingConfig> Migration for AuthorMappingAddKeysToRegistrationInfo<T> {
-	fn friendly_name(&self) -> &str {
-		"MM_Author_Mapping_AddKeysToRegistrationInfo"
-	}
-
-	fn migrate(&self, _available_weight: Weight) -> Weight {
-		AddKeysToRegistrationInfo::<T>::on_runtime_upgrade()
-	}
-
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		AddKeysToRegistrationInfo::<T>::pre_upgrade()
-	}
-
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		AddKeysToRegistrationInfo::<T>::post_upgrade()
-	}
-}
-
-/// Patch delegations total mismatch
-pub struct ParachainStakingPatchIncorrectDelegationSums<T>(PhantomData<T>);
-impl<T: ParachainStakingConfig> Migration for ParachainStakingPatchIncorrectDelegationSums<T> {
-	fn friendly_name(&self) -> &str {
-		"MM_Parachain_Staking_Patch_Incorrect_Delegation_Sums"
-	}
-
-	fn migrate(&self, _available_weight: Weight) -> Weight {
-		PatchIncorrectDelegationSums::<T>::on_runtime_upgrade()
-	}
-
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		PatchIncorrectDelegationSums::<T>::pre_upgrade()
-	}
-
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		PatchIncorrectDelegationSums::<T>::post_upgrade()
-	}
-}
-
-/// Staking split delegator state into [pallet_parachain_staking::DelegatorScheduledRequests]
-pub struct ParachainStakingSplitDelegatorStateIntoDelegationScheduledRequests<T>(PhantomData<T>);
-impl<T: ParachainStakingConfig> Migration
-	for ParachainStakingSplitDelegatorStateIntoDelegationScheduledRequests<T>
-{
-	fn friendly_name(&self) -> &str {
-		"MM_Parachain_Staking_Split_Delegator_State_Into_Delegation_Scheduled_Requests"
-	}
-
-	fn migrate(&self, _available_weight: Weight) -> Weight {
-		SplitDelegatorStateIntoDelegationScheduledRequests::<T>::on_runtime_upgrade()
-	}
-
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		SplitDelegatorStateIntoDelegationScheduledRequests::<T>::pre_upgrade()
-	}
-
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		SplitDelegatorStateIntoDelegationScheduledRequests::<T>::post_upgrade()
-	}
-}
-
-// /// Staking transition from automatic to manual exits, delay bond_{more, less} requests
-// pub struct ParachainStakingManualExits<T>(PhantomData<T>);
-// impl<T: ParachainStakingConfig> Migration for ParachainStakingManualExits<T> {
-// 	fn friendly_name(&self) -> &str {
-// 		"MM_Parachain_Staking_ManualExits"
-// 	}
-
-// 	fn migrate(&self, _available_weight: Weight) -> Weight {
-// 		RemoveExitQueue::<T>::on_runtime_upgrade()
-// 	}
-
-// 	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-// 	#[cfg(feature = "try-runtime")]
-// 	fn pre_upgrade(&self) -> Result<(), &'static str> {
-// 		RemoveExitQueue::<T>::pre_upgrade()
-// 	}
-
-// 	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-// 	#[cfg(feature = "try-runtime")]
-// 	fn post_upgrade(&self) -> Result<(), &'static str> {
-// 		RemoveExitQueue::<T>::post_upgrade()
-// 	}
-// }
-
-/// A moonbeam migration wrapping the similarly named migration in parachain-staking
-pub struct ParachainStakingPurgeStaleStorage<T>(PhantomData<T>);
-impl<T: ParachainStakingConfig> Migration for ParachainStakingPurgeStaleStorage<T> {
-	fn friendly_name(&self) -> &str {
-		"MM_Parachain_Staking_PurgeStaleStorage"
-	}
-
-	fn migrate(&self, _available_weight: Weight) -> Weight {
-		PurgeStaleStorage::<T>::on_runtime_upgrade()
-	}
-
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		PurgeStaleStorage::<T>::pre_upgrade()
-	}
-
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		PurgeStaleStorage::<T>::post_upgrade()
-	}
-}
-
-/// A moonbeam migration wrapping the similarly named migration in pallet-author-mapping
-// pub struct AuthorMappingTwoXToBlake<T>(PhantomData<T>);
-// impl<T: AuthorMappingConfig> Migration for AuthorMappingTwoXToBlake<T> {
-// 	fn friendly_name(&self) -> &str {
-// 		"MM_Author_Mapping_TwoXToBlake"
-// 	}
-
-// 	fn migrate(&self, _available_weight: Weight) -> Weight {
-// 		TwoXToBlake::<T>::on_runtime_upgrade()
-// 	}
-
-// 	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-// 	#[cfg(feature = "try-runtime")]
-// 	fn pre_upgrade(&self) -> Result<(), &'static str> {
-// 		TwoXToBlake::<T>::pre_upgrade()
-// 	}
-
-// 	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-// 	#[cfg(feature = "try-runtime")]
-// 	fn post_upgrade(&self) -> Result<(), &'static str> {
-// 		TwoXToBlake::<T>::post_upgrade()
-// 	}
-// }
-
-const COUNCIL_OLD_PREFIX: &str = "Instance1Collective";
-const TECH_OLD_PREFIX: &str = "Instance2Collective";
-
-pub struct MigrateCollectivePallets<Runtime, Council, Tech>(PhantomData<(Runtime, Council, Tech)>);
-impl<Runtime, Council, Tech> Migration for MigrateCollectivePallets<Runtime, Council, Tech>
+pub struct PreimageMigrationHashToBoundedCall<T>(PhantomData<T>);
+impl<T> Migration for PreimageMigrationHashToBoundedCall<T>
 where
-	Runtime: frame_system::Config,
-	Council: GetStorageVersion + PalletInfoAccess,
-	Tech: GetStorageVersion + PalletInfoAccess,
+	T: pallet_preimage::Config<Hash = PreimageHash> + frame_system::Config,
 {
 	fn friendly_name(&self) -> &str {
-		"MM_Collective_Pallets_v0.9.11_Prefixes"
+		"MM_PreimageMigrationHashToBoundedCall"
 	}
 
 	fn migrate(&self, _available_weight: Weight) -> Weight {
-		pallet_collective::migrations::v4::migrate::<Runtime, Council, _>(COUNCIL_OLD_PREFIX)
-			+ pallet_collective::migrations::v4::migrate::<Runtime, Tech, _>(TECH_OLD_PREFIX)
+		pallet_preimage::migration::v1::Migration::<T>::on_runtime_upgrade()
 	}
 
 	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
 	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		pallet_collective::migrations::v4::pre_migrate::<Council, _>(COUNCIL_OLD_PREFIX);
-		pallet_collective::migrations::v4::pre_migrate::<Tech, _>(TECH_OLD_PREFIX);
-		Ok(())
+	fn pre_upgrade(&self) -> Result<Vec<u8>, &'static str> {
+		pallet_preimage::migration::v1::Migration::<T>::pre_upgrade()
 	}
 
 	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
 	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		pallet_collective::migrations::v4::post_migrate::<Council, _>(COUNCIL_OLD_PREFIX);
-		pallet_collective::migrations::v4::post_migrate::<Tech, _>(TECH_OLD_PREFIX);
-		Ok(())
+	fn post_upgrade(&self, state: Vec<u8>) -> Result<(), &'static str> {
+		pallet_preimage::migration::v1::Migration::<T>::post_upgrade(state)
 	}
 }
 
-/// BaseFee pallet, set missing storage values.
-pub struct BaseFeePerGas<T>(PhantomData<T>);
-impl<T: BaseFeeConfig> OnRuntimeUpgrade for BaseFeePerGas<T> {
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade() -> Result<(), &'static str> {
-		let module: &[u8] = b"BaseFee";
-		// Verify the storage before the upgrade is empty
-		{
-			let item: &[u8] = b"BaseFeePerGas";
-			let value = get_storage_value::<sp_core::U256>(module, item, &[]);
-			Self::set_temp_storage(value.is_none(), "base_fee_is_empty");
-		}
-		// Elasticity storage value
-		{
-			let item: &[u8] = b"Elasticity";
-			let value = get_storage_value::<Permill>(module, item, &[]);
-			Self::set_temp_storage(value.is_none(), "elasticity_is_empty");
-		}
-
-		Ok(())
-	}
-
-	fn on_runtime_upgrade() -> Weight {
-		let module: &[u8] = b"BaseFee";
-		let db_weights = T::DbWeight::get();
-		let mut weight: Weight = 2 * db_weights.read;
-		// BaseFeePerGas storage value
-		{
-			let item: &[u8] = b"BaseFeePerGas";
-			let current_value = get_storage_value::<sp_core::U256>(module, item, &[]);
-			if current_value.is_none() {
-				// Put the default configured value in storage
-				let write = pallet_base_fee::Pallet::<T>::set_base_fee_per_gas_inner(
-					T::DefaultBaseFeePerGas::get(),
-				);
-				weight = weight.saturating_add(write);
-			}
-		}
-		// Elasticity storage value
-		{
-			let item: &[u8] = b"Elasticity";
-			let current_value = get_storage_value::<Permill>(module, item, &[]);
-			if current_value.is_none() {
-				// Put the default value in storage
-				let write = pallet_base_fee::Pallet::<T>::set_elasticity_inner(
-					Permill::from_parts(125_000),
-				);
-				weight = weight.saturating_add(write);
-			}
-		}
-		weight
-	}
-
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade() -> Result<(), &'static str> {
-		if Self::get_temp_storage::<bool>("base_fee_is_empty").is_some()
-			&& Self::get_temp_storage::<bool>("elasticity_is_empty").is_some()
-		{
-			// Verify the storage after the upgrade matches the runtime configured default
-			let module: &[u8] = b"BaseFee";
-			// BaseFeePerGas storage value
-			{
-				let item: &[u8] = b"BaseFeePerGas";
-				let value = get_storage_value::<sp_core::U256>(module, item, &[]);
-				assert_eq!(value, Some(T::DefaultBaseFeePerGas::get()));
-			}
-			// Elasticity storage value
-			{
-				let item: &[u8] = b"Elasticity";
-				let value = get_storage_value::<Permill>(module, item, &[]);
-				assert_eq!(value, Some(Permill::from_parts(125_000)));
-			}
-		}
-
-		Ok(())
-	}
-}
-
-pub struct MigrateBaseFeePerGas<T>(PhantomData<T>);
-// This is not strictly a migration, just an `on_runtime_upgrade` alternative to open a democracy
-// proposal to set this values through an extrinsic.
-impl<T: BaseFeeConfig> Migration for MigrateBaseFeePerGas<T> {
-	fn friendly_name(&self) -> &str {
-		"MM_Base_Fee_Per_Gas"
-	}
-
-	fn migrate(&self, _available_weight: Weight) -> Weight {
-		BaseFeePerGas::<T>::on_runtime_upgrade()
-	}
-
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		BaseFeePerGas::<T>::pre_upgrade()
-	}
-
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		BaseFeePerGas::<T>::post_upgrade()
-	}
-}
-
-// #[cfg(feature = "xcm-support")]
-// pub struct XcmTransactorMaxTransactWeight<T>(PhantomData<T>);
-// #[cfg(feature = "xcm-support")]
-// impl<T: XcmTransactorConfig> Migration for XcmTransactorMaxTransactWeight<T> {
-// 	fn friendly_name(&self) -> &str {
-// 		"MM_Xcm_Transactor_MaxTransactWeight"
-// 	}
-
-// 	fn migrate(&self, _available_weight: Weight) -> Weight {
-// 		MaxTransactWeight::<T>::on_runtime_upgrade()
-// 	}
-
-// 	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-// 	#[cfg(feature = "try-runtime")]
-// 	fn pre_upgrade(&self) -> Result<(), &'static str> {
-// 		MaxTransactWeight::<T>::pre_upgrade()
-// 	}
-
-// 	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-// 	#[cfg(feature = "try-runtime")]
-// 	fn post_upgrade(&self) -> Result<(), &'static str> {
-// 		MaxTransactWeight::<T>::post_upgrade()
-// 	}
-// }
-
-pub struct XcmTransactorTransactSignedWeightAndFeePerSecond<T>(PhantomData<T>);
-impl<T: XcmTransactorConfig> Migration for XcmTransactorTransactSignedWeightAndFeePerSecond<T> {
-	fn friendly_name(&self) -> &str {
-		"MM_Xcm_Transactor_TransactSignedWeightAndFeePerSecond"
-	}
-
-	fn migrate(&self, _available_weight: Weight) -> Weight {
-		TransactSignedWeightAndFeePerSecond::<T>::on_runtime_upgrade()
-	}
-
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		TransactSignedWeightAndFeePerSecond::<T>::pre_upgrade()
-	}
-
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		TransactSignedWeightAndFeePerSecond::<T>::post_upgrade()
-	}
-}
-pub struct AssetManagerUnitsWithAssetType<T>(PhantomData<T>);
-impl<T: AssetManagerConfig> Migration for AssetManagerUnitsWithAssetType<T> {
-	fn friendly_name(&self) -> &str {
-		"MM_Asset_Manager_UnitsWithAssetType"
-	}
-
-	fn migrate(&self, _available_weight: Weight) -> Weight {
-		UnitsWithAssetType::<T>::on_runtime_upgrade()
-	}
-
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		UnitsWithAssetType::<T>::pre_upgrade()
-	}
-
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		UnitsWithAssetType::<T>::post_upgrade()
-	}
-}
-
-pub struct AssetManagerPopulateAssetTypeIdStorage<T>(PhantomData<T>);
-impl<T: AssetManagerConfig> Migration for AssetManagerPopulateAssetTypeIdStorage<T> {
-	fn friendly_name(&self) -> &str {
-		"MM_Asset_Manager_PopulateAssetTypeIdStorage"
-	}
-
-	fn migrate(&self, _available_weight: Weight) -> Weight {
-		PopulateAssetTypeIdStorage::<T>::on_runtime_upgrade()
-	}
-
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		PopulateAssetTypeIdStorage::<T>::pre_upgrade()
-	}
-
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		PopulateAssetTypeIdStorage::<T>::post_upgrade()
-	}
-}
-
-pub struct AssetManagerChangeStateminePrefixes<T, StatemineParaIdInfo, StatemineAssetsPalletInfo>(
-	PhantomData<(T, StatemineParaIdInfo, StatemineAssetsPalletInfo)>,
-);
-impl<T, StatemineParaIdInfo, StatemineAssetsPalletInfo> Migration
-	for AssetManagerChangeStateminePrefixes<T, StatemineParaIdInfo, StatemineAssetsPalletInfo>
+pub struct PalletReferendaMigrateV0ToV1<T>(pub PhantomData<T>);
+impl<T> Migration for PalletReferendaMigrateV0ToV1<T>
 where
-	T: AssetManagerConfig,
-	StatemineParaIdInfo: Get<u32>,
-	StatemineAssetsPalletInfo: Get<u8>,
-	T::ForeignAssetType: Into<Option<MultiLocation>> + From<MultiLocation>,
+	T: pallet_referenda::Config<Hash = PreimageHash> + frame_system::Config,
 {
 	fn friendly_name(&self) -> &str {
-		"MM_Asset_Manager_ChangeStateminePrefixes"
+		"MM_PalletReferendaMigrateV0ToV1"
 	}
 
 	fn migrate(&self, _available_weight: Weight) -> Weight {
-		ChangeStateminePrefixes::<
-			T,
-			StatemineParaIdInfo,
-			StatemineAssetsPalletInfo
-		>::on_runtime_upgrade()
+		pallet_referenda::migration::v1::MigrateV0ToV1::<T>::on_runtime_upgrade()
 	}
 
 	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
 	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		ChangeStateminePrefixes::<T, StatemineParaIdInfo, StatemineAssetsPalletInfo>::pre_upgrade()
+	fn pre_upgrade(&self) -> Result<Vec<u8>, &'static str> {
+		pallet_referenda::migration::v1::MigrateV0ToV1::<T>::pre_upgrade()
 	}
 
 	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
 	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		ChangeStateminePrefixes::<T, StatemineParaIdInfo, StatemineAssetsPalletInfo>::post_upgrade()
-	}
-}
-pub struct XcmPaymentSupportedAssets<T>(PhantomData<T>);
-impl<T: AssetManagerConfig> Migration for XcmPaymentSupportedAssets<T> {
-	fn friendly_name(&self) -> &str {
-		"MM_Xcm_Payment_Supported_Assets"
-	}
-
-	fn migrate(&self, _available_weight: Weight) -> Weight {
-		PopulateSupportedFeePaymentAssets::<T>::on_runtime_upgrade()
-	}
-
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		PopulateSupportedFeePaymentAssets::<T>::pre_upgrade()
-	}
-
-	#[cfg(feature = "try-runtime")]
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		PopulateSupportedFeePaymentAssets::<T>::post_upgrade()
+	fn post_upgrade(&self, state: Vec<u8>) -> Result<(), &'static str> {
+		pallet_referenda::migration::v1::MigrateV0ToV1::<T>::post_upgrade(state)
 	}
 }
 
-pub struct AuthorSlotFilterEligibleRatioToEligiblityCount<T>(PhantomData<T>);
-impl<T> Migration for AuthorSlotFilterEligibleRatioToEligiblityCount<T>
+pub struct ReferendaMigrations<Runtime, Council, Tech>(PhantomData<(Runtime, Council, Tech)>);
+
+impl<Runtime, Council, Tech> GetMigrations for ReferendaMigrations<Runtime, Council, Tech>
 where
-	T: AuthorSlotFilterConfig,
+	Runtime: pallet_author_mapping::Config,
+	Runtime: pallet_parachain_staking::Config,
+	Runtime: pallet_scheduler::Config<Hash = PreimageHash>,
+	Runtime: AuthorSlotFilterConfig,
+	Council: GetStorageVersion + PalletInfoAccess + 'static,
+	Tech: GetStorageVersion + PalletInfoAccess + 'static,
+	Runtime: pallet_democracy::Config<Hash = PreimageHash>,
+	Runtime: pallet_preimage::Config<Hash = PreimageHash>,
+	Runtime: pallet_referenda::Config,
 {
-	fn friendly_name(&self) -> &str {
-		"MM_AuthorSlotFilter_EligibleRatioToEligiblityCount"
-	}
-
-	fn migrate(&self, _available_weight: Weight) -> Weight {
-		EligibleRatioToEligiblityCount::<T>::on_runtime_upgrade()
-	}
-
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		EligibleRatioToEligiblityCount::<T>::pre_upgrade()
-	}
-
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		EligibleRatioToEligiblityCount::<T>::post_upgrade()
-	}
-}
-
-pub struct SchedulerMigrationV3<T>(PhantomData<T>);
-impl<T: pallet_scheduler::Config> Migration for SchedulerMigrationV3<T> {
-	fn friendly_name(&self) -> &str {
-		"MM_SchedulerMigrationV3"
-	}
-
-	fn migrate(&self, _available_weight: Weight) -> Weight {
-		pallet_scheduler::Pallet::<T>::migrate_v2_to_v3()
-	}
-
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		pallet_scheduler::Pallet::<T>::pre_migrate_to_v3()
-	}
-
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		pallet_scheduler::Pallet::<T>::post_migrate_to_v3()
-	}
-}
-
-/// BaseFee pallet, set Elasticity to zero.
-/// This migration needs to be applied before or at the same time we introduce:
-/// https://github.com/paritytech/frontier/pull/794
-pub struct BaseFeeElasticity<T>(PhantomData<T>);
-impl<T: BaseFeeConfig> OnRuntimeUpgrade for BaseFeeElasticity<T> {
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade() -> Result<(), &'static str> {
-		let module: &[u8] = b"BaseFee";
-		// Elasticity storage value
-		{
-			let item: &[u8] = b"Elasticity";
-			let value = get_storage_value::<Permill>(module, item, &[]).unwrap_or(Permill::zero());
-			Self::set_temp_storage(value, "elasticity_pre_upgrade");
-		}
-
-		Ok(())
-	}
-
-	fn on_runtime_upgrade() -> Weight {
-		let module: &[u8] = b"BaseFee";
-		let db_weights = T::DbWeight::get();
-		let mut weight: Weight = 1 * db_weights.read;
-		// Elasticity storage value
-		{
-			let item: &[u8] = b"Elasticity";
-			let current_value =
-				get_storage_value::<Permill>(module, item, &[]).unwrap_or(Permill::zero());
-			if !current_value.is_zero() {
-				// Set Elasticity to zero, which results in constant BaseFeePerGas
-				let write = pallet_base_fee::Pallet::<T>::set_elasticity_inner(Permill::zero());
-				weight = weight.saturating_add(write);
-			}
-		}
-		weight
-	}
-
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade() -> Result<(), &'static str> {
-		let pre_value =
-			Self::get_temp_storage::<Permill>("elasticity_pre_upgrade").unwrap_or(Permill::zero());
-		if !pre_value.is_zero() {
-			// Verify the storage after the upgrade is Permill::zero
-			let module: &[u8] = b"BaseFee";
-			// Elasticity storage value
-			{
-				let item: &[u8] = b"Elasticity";
-				let value = get_storage_value::<Permill>(module, item, &[]);
-				assert_eq!(value, Some(Permill::zero()));
-			}
-		}
-
-		Ok(())
-	}
-}
-
-pub struct MigrateBaseFeeElasticity<T>(PhantomData<T>);
-// This is not strictly a migration, just an `on_runtime_upgrade` alternative to open a democracy
-// proposal to set this values through an extrinsic.
-impl<T: BaseFeeConfig> Migration for MigrateBaseFeeElasticity<T> {
-	fn friendly_name(&self) -> &str {
-		"MM_Base_Fee_Elasticity"
-	}
-
-	fn migrate(&self, _available_weight: Weight) -> Weight {
-		BaseFeeElasticity::<T>::on_runtime_upgrade()
-	}
-
-	/// Run a standard pre-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn pre_upgrade(&self) -> Result<(), &'static str> {
-		BaseFeeElasticity::<T>::pre_upgrade()
-	}
-
-	/// Run a standard post-runtime test. This works the same way as in a normal runtime upgrade.
-	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(&self) -> Result<(), &'static str> {
-		BaseFeeElasticity::<T>::post_upgrade()
+	fn get_migrations() -> Vec<Box<dyn Migration>> {
+		let pallet_referenda_migrate_v0_to_v1 =
+			PalletReferendaMigrateV0ToV1::<Runtime>(Default::default());
+		vec![Box::new(pallet_referenda_migrate_v0_to_v1)]
 	}
 }
 
@@ -653,11 +107,15 @@ impl<Runtime, Council, Tech> GetMigrations for CommonMigrations<Runtime, Council
 where
 	Runtime: pallet_author_mapping::Config,
 	Runtime: pallet_parachain_staking::Config,
-	Runtime: pallet_scheduler::Config,
-	Runtime: pallet_base_fee::Config,
+	Runtime: pallet_scheduler::Config<Hash = PreimageHash>,
 	Runtime: AuthorSlotFilterConfig,
 	Council: GetStorageVersion + PalletInfoAccess + 'static,
 	Tech: GetStorageVersion + PalletInfoAccess + 'static,
+	Runtime: pallet_democracy::Config<Hash = PreimageHash>,
+	Runtime: pallet_preimage::Config<Hash = PreimageHash>,
+	Runtime: pallet_asset_manager::Config,
+	<Runtime as pallet_asset_manager::Config>::ForeignAssetType: From<xcm::v3::MultiLocation>,
+	Runtime: pallet_xcm_transactor::Config,
 {
 	fn get_migrations() -> Vec<Box<dyn Migration>> {
 		// let migration_author_mapping_twox_to_blake = AuthorMappingTwoXToBlake::<Runtime> {
@@ -710,8 +168,19 @@ where
 
 		// let xcm_supported_assets = XcmPaymentSupportedAssets::<Runtime>(Default::default());
 
-		let migration_elasticity = MigrateBaseFeeElasticity::<Runtime>(Default::default());
+		// let migration_elasticity = MigrateBaseFeeElasticity::<Runtime>(Default::default());
+		//let staking_at_stake_auto_compound =
+		//	ParachainStakingMigrateAtStakeAutoCompound::<Runtime>(Default::default());
 
+		//let scheduler_to_v4 = SchedulerMigrationV4::<Runtime>(Default::default());
+		//let democracy_migration_hash_to_bounded_call =
+		//	DemocracryMigrationHashToBoundedCall::<Runtime>(Default::default());
+		//let preimage_migration_hash_to_bounded_call =
+		//	PreimageMigrationHashToBoundedCall::<Runtime>(Default::default());
+		//let asset_manager_to_xcm_v3 =
+		//	PalletAssetManagerMigrateXcmV2ToV3::<Runtime>(Default::default());
+		//let xcm_transactor_to_xcm_v3 =
+		//	PalletXcmTransactorMigrateXcmV2ToV3::<Runtime>(Default::default());
 		vec![
 			// completed in runtime 800
 			// Box::new(migration_author_mapping_twox_to_blake),
@@ -744,12 +213,20 @@ where
 			// Box::new(migration_author_slot_filter_eligible_ratio_to_eligibility_count),
 			// Box::new(migration_author_mapping_add_keys_to_registration_info),
 			// Box::new(staking_delegator_state_requests),
-
 			// completed in runtime 1600
 			// Box::new(migration_author_mapping_add_account_id_to_nimbus_lookup),
 			// completed in runtime 1600
 			// Box::new(xcm_transactor_transact_signed),
-			Box::new(migration_elasticity),
+			// completed in runtime 1700
+			//Box::new(migration_elasticity),
+			// completed in runtime 1900
+			//Box::new(staking_at_stake_auto_compound),
+			// completed in runtime 2000
+			//Box::new(scheduler_to_v4),
+			//Box::new(democracy_migration_hash_to_bounded_call),
+			//Box::new(preimage_migration_hash_to_bounded_call),
+			//Box::new(asset_manager_to_xcm_v3),
+			//Box::new(xcm_transactor_to_xcm_v3),
 		]
 	}
 }

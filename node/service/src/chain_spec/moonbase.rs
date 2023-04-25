@@ -26,18 +26,19 @@ use cumulus_primitives_core::ParaId;
 use hex_literal::hex;
 use moonbase_runtime::{
 	currency::UNIT, AccountId, AuthorFilterConfig, AuthorMappingConfig, Balance, BalancesConfig,
-	BaseFeeConfig, CouncilCollectiveConfig, CrowdloanRewardsConfig, DemocracyConfig, EVMConfig,
-	EligibilityValue, EthereumChainIdConfig, EthereumConfig, GenesisAccount, GenesisConfig,
-	InflationInfo, MaintenanceModeConfig, ParachainInfoConfig, ParachainStakingConfig,
-	PolkadotXcmConfig, Precompiles, Range, SudoConfig, SystemConfig, TechCommitteeCollectiveConfig,
-	TreasuryCouncilCollectiveConfig, HOURS, WASM_BINARY,
+	CouncilCollectiveConfig, CrowdloanRewardsConfig, DemocracyConfig, EVMConfig, EligibilityValue,
+	EthereumChainIdConfig, EthereumConfig, GenesisAccount, GenesisConfig, InflationInfo,
+	MaintenanceModeConfig, OpenTechCommitteeCollectiveConfig, ParachainInfoConfig,
+	ParachainStakingConfig, PolkadotXcmConfig, Precompiles, Range, SudoConfig, SystemConfig,
+	TechCommitteeCollectiveConfig, TransactionPaymentConfig, TreasuryCouncilCollectiveConfig,
+	HOURS, WASM_BINARY,
 };
 use nimbus_primitives::NimbusId;
+use pallet_transaction_payment::Multiplier;
 use sc_service::ChainType;
 #[cfg(test)]
 use sp_core::ecdsa;
-use sp_core::U256;
-use sp_runtime::{Perbill, Percent, Permill};
+use sp_runtime::{Perbill, Percent};
 
 /// Specialized `ChainSpec`. This is a specialization of the general Substrate ChainSpec type.
 pub type ChainSpec = sc_service::GenericChainSpec<GenesisConfig, Extensions>;
@@ -68,6 +69,8 @@ pub fn development_chain_spec(mnemonic: Option<String>, num_accounts: Option<u32
 				vec![accounts[0], accounts[1]],
 				// Treasury Council members: Baltathar, Charleth and Dorothy
 				vec![accounts[1], accounts[2], accounts[3]],
+				// Open Tech committee members: Alith and Baltathar
+				vec![accounts[0], accounts[1]],
 				// Collator Candidate: Alice -> Alith
 				vec![(
 					accounts[0],
@@ -136,6 +139,11 @@ pub fn get_chain_spec(para_id: ParaId) -> ChainSpec {
 					AccountId::from(hex!("798d4Ba9baf0064Ec19eB4F0a1a45785ae9D6DFc")),
 					AccountId::from(hex!("773539d4Ac0e786233D90A233654ccEE26a613D9")),
 				],
+				// Open Tech committee members: Alith and Baltathar
+				vec![
+					AccountId::from(hex!("f24FF3a9CF04c71Dbc94D0b566f7A27B94566cac")),
+					AccountId::from(hex!("3Cd0A705a2DC65e5b1E1205896BaA2be8A07c6e0")),
+				],
 				// Collator Candidates
 				vec![
 					// Alice -> Alith
@@ -191,6 +199,7 @@ pub fn get_chain_spec(para_id: ParaId) -> ChainSpec {
 const COLLATOR_COMMISSION: Perbill = Perbill::from_percent(20);
 const PARACHAIN_BOND_RESERVE_PERCENT: Percent = Percent::from_percent(30);
 const BLOCKS_PER_ROUND: u32 = 2 * HOURS;
+const NUM_SELECTED_CANDIDATES: u32 = 8;
 pub fn moonbase_inflation_config() -> InflationInfo<Balance> {
 	fn to_round_inflation(annual: Range<Perbill>) -> Range<Perbill> {
 		use pallet_parachain_staking::inflation::{
@@ -225,8 +234,9 @@ pub fn testnet_genesis(
 	council_members: Vec<AccountId>,
 	tech_comittee_members: Vec<AccountId>,
 	treasury_council_members: Vec<AccountId>,
+	open_tech_committee_members: Vec<AccountId>,
 	candidates: Vec<(AccountId, NimbusId, Balance)>,
-	delegations: Vec<(AccountId, AccountId, Balance)>,
+	delegations: Vec<(AccountId, AccountId, Balance, Percent)>,
 	endowed_accounts: Vec<AccountId>,
 	crowdloan_fund_pot: Balance,
 	para_id: ParaId,
@@ -279,11 +289,6 @@ pub fn testnet_genesis(
 				.collect(),
 		},
 		ethereum: EthereumConfig {},
-		base_fee: BaseFeeConfig::new(
-			U256::from(1_000_000_000u64),
-			false,
-			Permill::from_parts(125_000),
-		),
 		democracy: DemocracyConfig::default(),
 		parachain_staking: ParachainStakingConfig {
 			candidates: candidates
@@ -296,6 +301,7 @@ pub fn testnet_genesis(
 			collator_commission: COLLATOR_COMMISSION,
 			parachain_bond_reserve_percent: PARACHAIN_BOND_RESERVE_PERCENT,
 			blocks_per_round: BLOCKS_PER_ROUND,
+			num_selected_candidates: NUM_SELECTED_CANDIDATES,
 		},
 		council_collective: CouncilCollectiveConfig {
 			phantom: Default::default(),
@@ -308,6 +314,10 @@ pub fn testnet_genesis(
 		treasury_council_collective: TreasuryCouncilCollectiveConfig {
 			phantom: Default::default(),
 			members: treasury_council_members,
+		},
+		open_tech_committee_collective: OpenTechCommitteeCollectiveConfig {
+			phantom: Default::default(),
+			members: open_tech_committee_members,
 		},
 		author_filter: AuthorFilterConfig {
 			eligible_count: EligibilityValue::new_unchecked(50),
@@ -327,6 +337,9 @@ pub fn testnet_genesis(
 		},
 		// This should initialize it to whatever we have set in the pallet
 		polkadot_xcm: PolkadotXcmConfig::default(),
+		transaction_payment: TransactionPaymentConfig {
+			multiplier: Multiplier::from(8u128),
+		},
 	}
 }
 

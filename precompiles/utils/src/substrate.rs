@@ -19,7 +19,7 @@
 //! - Substrate DB read and write costs
 
 use {
-	crate::revert,
+	crate::{evm::handle::using_precompile_handle, solidity::revert::revert},
 	core::marker::PhantomData,
 	fp_evm::{ExitError, PrecompileFailure, PrecompileHandle},
 	frame_support::{
@@ -30,6 +30,7 @@ use {
 	pallet_evm::GasWeightMapping,
 };
 
+#[derive(Debug)]
 pub enum TryDispatchError {
 	Evm(ExitError),
 	Substrate(DispatchError),
@@ -54,20 +55,20 @@ pub struct RuntimeHelper<Runtime>(PhantomData<Runtime>);
 impl<Runtime> RuntimeHelper<Runtime>
 where
 	Runtime: pallet_evm::Config,
-	Runtime::Call: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
+	Runtime::RuntimeCall: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
 {
 	/// Try to dispatch a Substrate call.
 	/// Return an error if there are not enough gas, or if the call fails.
 	/// If successful returns the used gas using the Runtime GasWeightMapping.
 	pub fn try_dispatch<Call>(
 		handle: &mut impl PrecompileHandle,
-		origin: <Runtime::Call as Dispatchable>::Origin,
+		origin: <Runtime::RuntimeCall as Dispatchable>::RuntimeOrigin,
 		call: Call,
 	) -> Result<PostDispatchInfo, TryDispatchError>
 	where
-		Runtime::Call: From<Call>,
+		Runtime::RuntimeCall: From<Call>,
 	{
-		let call = Runtime::Call::from(call);
+		let call = Runtime::RuntimeCall::from(call);
 		let dispatch_info = call.get_dispatch_info();
 
 		// Make sure there is enough gas.
@@ -82,8 +83,7 @@ where
 		// However while Substrate handle checking weight while not making the sender pay for it,
 		// the EVM doesn't. It seems this safer to always record the costs to avoid unmetered
 		// computations.
-		let post_dispatch_info = call
-			.dispatch(origin)
+		let post_dispatch_info = using_precompile_handle(handle, || call.dispatch(origin))
 			.map_err(|e| TryDispatchError::Substrate(e.error))?;
 
 		let used_weight = post_dispatch_info.actual_weight;
@@ -106,14 +106,14 @@ where
 	/// Cost of a Substrate DB write in gas.
 	pub fn db_write_gas_cost() -> u64 {
 		<Runtime as pallet_evm::Config>::GasWeightMapping::weight_to_gas(
-			<Runtime as frame_system::Config>::DbWeight::get().write,
+			<Runtime as frame_system::Config>::DbWeight::get().writes(1),
 		)
 	}
 
 	/// Cost of a Substrate DB read in gas.
 	pub fn db_read_gas_cost() -> u64 {
 		<Runtime as pallet_evm::Config>::GasWeightMapping::weight_to_gas(
-			<Runtime as frame_system::Config>::DbWeight::get().read,
+			<Runtime as frame_system::Config>::DbWeight::get().reads(1),
 		)
 	}
 }

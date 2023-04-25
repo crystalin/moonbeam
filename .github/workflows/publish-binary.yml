@@ -13,8 +13,18 @@ on:
 
 jobs:
   ####### Building binaries #######
+  setup-scripts:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v3
+      - name: Upload tools
+        uses: actions/upload-artifact@v3.1.2
+        with:
+          name: original-tools
+          path: tools
 
   build-binary:
+    needs: ["setup-scripts"]
     runs-on: self-hosted
     strategy:
       matrix:
@@ -23,7 +33,7 @@ jobs:
       RUSTFLAGS: "-C target-cpu=${{ matrix.cpu }}"
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           ref: ${{ github.event.inputs.to }}
       - name: Setup Rust toolchain
@@ -41,7 +51,7 @@ jobs:
           mkdir -p build
           cp target/production/moonbeam build/moonbeam-${{matrix.cpu}}
       - name: Upload binary
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3.1.2
         with:
           name: moonbeam
           path: build
@@ -56,24 +66,29 @@ jobs:
       asset_upload_url: ${{ steps.create-release.outputs.upload_url }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           ref: ${{ github.event.inputs.to }}
           fetch-depth: 0
-      - uses: actions/download-artifact@v2
+      - uses: actions/download-artifact@v3.0.2
         with:
           name: moonbeam
           path: build
       - name: Use Node.js 16.x
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v3
         with:
           node-version: 16.x
+      - name: Download Original Tools
+        uses: actions/download-artifact@v3
+        with:
+          name: original-tools
+          path: original-tools
       - name: Generate release body
         id: generate-release-body
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: original-tools
         run: |
-          cd tools
           yarn
           yarn -s run ts-node github/generate-release-body.ts --owner "${{ github.repository_owner }}" --repo "$(basename ${{ github.repository }})" --from "${{ github.event.inputs.from }}" --to "${{ github.event.inputs.to }}" --srtool-report-folder '../build/' > ../body.md
       - name: Create draft release

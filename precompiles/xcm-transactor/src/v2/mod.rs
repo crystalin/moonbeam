@@ -32,9 +32,9 @@ pub struct XcmTransactorPrecompileV2<Runtime>(PhantomData<Runtime>);
 impl<Runtime> XcmTransactorPrecompileV2<Runtime>
 where
 	Runtime: pallet_xcm_transactor::Config + pallet_evm::Config + frame_system::Config,
-	Runtime::Call: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
-	Runtime::Call: From<pallet_xcm_transactor::Call<Runtime>>,
-	<Runtime::Call as Dispatchable>::Origin: From<Option<Runtime::AccountId>>,
+	Runtime::RuntimeCall: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
+	Runtime::RuntimeCall: From<pallet_xcm_transactor::Call<Runtime>>,
+	<Runtime::RuntimeCall as Dispatchable>::RuntimeOrigin: From<Option<Runtime::AccountId>>,
 	TransactorOf<Runtime>: TryFrom<u8>,
 	Runtime::AccountId: Into<H160>,
 	Runtime: AccountIdToCurrencyId<Runtime::AccountId, CurrencyIdOf<Runtime>>,
@@ -79,7 +79,7 @@ where
 		fee_asset: MultiLocation,
 		weight: u64,
 		inner_call: BoundedBytes<GetDataLimit>,
-		fee_amount: SolidityConvert<U256, u128>,
+		fee_amount: Convert<U256, u128>,
 		overall_weight: u64,
 	) -> EvmResult {
 		XcmTransactorWrapper::<Runtime>::transact_through_derivative_multilocation_fee_weight(
@@ -111,7 +111,7 @@ where
 		fee_asset: Address,
 		weight: u64,
 		inner_call: BoundedBytes<GetDataLimit>,
-		fee_amount: SolidityConvert<U256, u128>,
+		fee_amount: Convert<U256, u128>,
 		overall_weight: u64,
 	) -> EvmResult {
 		XcmTransactorWrapper::<Runtime>::transact_through_derivative_fee_weight(
@@ -141,7 +141,7 @@ where
 		fee_asset: MultiLocation,
 		weight: u64,
 		call: BoundedBytes<GetDataLimit>,
-		fee_amount: SolidityConvert<U256, u128>,
+		fee_amount: Convert<U256, u128>,
 		overall_weight: u64,
 	) -> EvmResult {
 		XcmTransactorWrapper::<Runtime>::transact_through_signed_multilocation_fee_weight(
@@ -164,7 +164,7 @@ where
 		fee_asset: Address,
 		weight: u64,
 		call: BoundedBytes<GetDataLimit>,
-		fee_amount: SolidityConvert<U256, u128>,
+		fee_amount: Convert<U256, u128>,
 		overall_weight: u64,
 	) -> EvmResult {
 		XcmTransactorWrapper::<Runtime>::transact_through_signed_fee_weight(
@@ -175,6 +175,20 @@ where
 			call,
 			fee_amount.converted(),
 			overall_weight,
+		)
+	}
+
+	#[precompile::public("encodeUtilityAsDerivative(uint8,uint16,bytes)")]
+	#[precompile::public("encode_utility_as_derivative(uint8,uint16,bytes)")]
+	#[precompile::view]
+	fn encode_utility_as_derivative(
+		handle: &mut impl PrecompileHandle,
+		transactor: u8,
+		index: u16,
+		inner_call: BoundedBytes<GetDataLimit>,
+	) -> EvmResult<UnboundedBytes> {
+		XcmTransactorWrapper::<Runtime>::encode_utility_as_derivative(
+			handle, transactor, index, inner_call,
 		)
 	}
 }

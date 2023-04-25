@@ -1,20 +1,15 @@
 import "@moonbeam-network/api-augment";
 import { ApiDecoration } from "@polkadot/api/types";
-import { Option, u128 } from "@polkadot/types-codec";
-import type { PalletAssetManagerAssetInfo, PalletAssetsAssetDetails } from "@polkadot/types/lookup";
-
+import { u128 } from "@polkadot/types-codec";
 import { expect } from "chai";
 import { describeSmokeSuite } from "../util/setup-smoke-tests";
 import { StorageKey } from "@polkadot/types";
 const debug = require("debug")("smoke:localAssets");
 
-const wssUrl = process.env.WSS_URL || null;
-const relayWssUrl = process.env.RELAY_WSS_URL || null;
-
 describeSmokeSuite(
+  "S1300",
   `Verify local asset count, assetIds and deposits`,
-  { wssUrl, relayWssUrl },
-  (context) => {
+  (context, testIt) => {
     let atBlockNumber: number = 0;
     let apiAt: ApiDecoration<"promise"> = null;
     let localAssetDeposits: StorageKey<[u128]>[] = null;
@@ -36,7 +31,7 @@ describeSmokeSuite(
       localAssetInfo = await apiAt.query.assetManager.localAssetDeposit.keys();
     });
 
-    it("should match asset deposit entries with number of assets", async function () {
+    testIt("C100", `should match asset deposit entries with number of assets`, async function () {
       expect(
         localAssetDeposits.length,
         `Number of local asset deposits does not much number of local assets`
@@ -47,48 +42,50 @@ describeSmokeSuite(
       );
     });
 
-    it("should ensure localAssetCounter is higher than number of local assets", async function () {
-      expect(
-        localAssetCounter,
-        `Local asset counter lower than total local assets`
-      ).to.be.greaterThanOrEqual(localAssetInfo.length);
+    testIt(
+      "C200",
+      `should ensure localAssetCounter is higher than number of local assets`,
+      async function () {
+        expect(
+          localAssetCounter,
+          `Local asset counter lower than total local assets`
+        ).to.be.greaterThanOrEqual(localAssetInfo.length);
 
-      debug(
-        `Verified local asset counter (${localAssetCounter}) 
+        debug(
+          `Verified local asset counter (${localAssetCounter}) 
         >= total local assets: (${localAssetInfo.length})`
-      );
-    });
-
-    it("assetIds stored by assetManager are also created in LocalAssets", async function () {
-      // Instead of putting an expect in the loop. We track all failed entries instead
-      const failedLocalAssets: { assetId: string }[] = [];
-
-      const registeredLocalAssetDeposits = localAssetDeposits.map((set) => set.toHex().slice(-32));
-
-      const registeredLocalAssetInfos = localAssetInfo.map((set) => set.toHex().slice(-32));
-
-      for (const assetId of registeredLocalAssetDeposits) {
-        if (!registeredLocalAssetInfos.includes(assetId)) {
-          failedLocalAssets.push({ assetId: assetId });
-        }
+        );
       }
+    );
 
-      console.log("Failed local asset deposits with non-existent local assets:");
-      console.log(
-        failedLocalAssets
-          .map(({ assetId }) => {
-            return `expected: ${assetId} to be present in localAssets `;
-          })
-          .join(`\n`)
-      );
+    testIt(
+      "C300",
+      `assetIds stored by assetManager are also created in LocalAssets`,
+      async function () {
+        const failedLocalAssets: { assetId: string }[] = [];
+        const registeredLocalAssetDeposits = localAssetDeposits.map((set) =>
+          set.toHex().slice(-32)
+        );
+        const registeredLocalAssetInfos = localAssetInfo.map((set) => set.toHex().slice(-32));
 
-      // Make sure the test fails after we print the errors
-      expect(failedLocalAssets.length, "Failed local assets").to.equal(0);
+        for (const assetId of registeredLocalAssetDeposits) {
+          if (!registeredLocalAssetInfos.includes(assetId)) {
+            failedLocalAssets.push({ assetId: assetId });
+          }
+        }
 
-      // Additional debug logs
-      debug(
-        `Verified ${Object.keys(localAssetInfo).length} total loacl assetIds (at #${atBlockNumber})`
-      );
-    });
+        expect(
+          failedLocalAssets.length,
+          `Failed deposits with non-existent local assets: ${failedLocalAssets
+            .map(({ assetId }) => `expected: ${assetId} to be present in localAssets `)
+            .join(`, `)}`
+        ).to.equal(0);
+        debug(
+          `Verified ${
+            Object.keys(localAssetInfo).length
+          } total loacl assetIds (at #${atBlockNumber})`
+        );
+      }
+    );
   }
 );

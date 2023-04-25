@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
 pragma solidity >=0.8.0;
 
+/// @dev The XcmTransactorV2 contract's address.
+address constant XCM_TRANSACTOR_V2_ADDRESS = 0x000000000000000000000000000000000000080D;
+
+/// @dev The XcmTransactorV2 contract's instance.
+XcmTransactorV2 constant XCM_TRANSACTOR_V2_CONTRACT = XcmTransactorV2(
+    XCM_TRANSACTOR_V2_ADDRESS
+);
+
+/// @author The Moonbeam Team
 /// @title Xcm Transactor Interface
 /// The interface through which solidity contracts will interact with xcm transactor pallet
 /// @custom:address 0x000000000000000000000000000000000000080D
@@ -128,4 +137,15 @@ interface XcmTransactorV2 {
         uint256 feeAmount,
         uint64 overallWeight
     ) external;
+
+    /// @dev Encode 'utility.as_derivative' relay call
+    /// @custom:selector ff86378d
+    /// @param transactor The transactor to be used
+    /// @param index: The derivative index to use
+    /// @param innerCall: The inner call to be executed from the derivated address
+    /// @return result The bytes associated with the encoded call
+    function encodeUtilityAsDerivative(uint8 transactor, uint16 index, bytes memory innerCall)
+        external
+        pure
+        returns (bytes memory result);
 }

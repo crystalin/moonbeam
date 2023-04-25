@@ -114,7 +114,7 @@ macro_rules! impl_runtime_apis_plus_common {
 						// transactions that preceded the requested transaction.
 						for ext in extrinsics.into_iter() {
 							let _ = match &ext.0.function {
-								Call::Ethereum(transact { transaction }) => {
+								RuntimeCall::Ethereum(transact { transaction }) => {
 									if transaction == traced_transaction {
 										EvmTracer::new().trace(|| Executive::apply_extrinsic(ext));
 										return Ok(());
@@ -164,7 +164,7 @@ macro_rules! impl_runtime_apis_plus_common {
 						// Apply all extrinsics. Ethereum extrinsics are traced.
 						for ext in extrinsics.into_iter() {
 							match &ext.0.function {
-								Call::Ethereum(transact { transaction }) => {
+								RuntimeCall::Ethereum(transact { transaction }) => {
 									if known_transactions.contains(&transaction.hash()) {
 										// Each known extrinsic is a new call stack.
 										EvmTracer::emit_new();
@@ -197,14 +197,14 @@ macro_rules! impl_runtime_apis_plus_common {
 						ready: xts_ready
 							.into_iter()
 							.filter_map(|xt| match xt.0.function {
-								Call::Ethereum(transact { transaction }) => Some(transaction),
+								RuntimeCall::Ethereum(transact { transaction }) => Some(transaction),
 								_ => None,
 							})
 							.collect(),
 						future: xts_future
 							.into_iter()
 							.filter_map(|xt| match xt.0.function {
-								Call::Ethereum(transact { transaction }) => Some(transaction),
+								RuntimeCall::Ethereum(transact { transaction }) => Some(transaction),
 								_ => None,
 							})
 							.collect(),
@@ -342,14 +342,16 @@ macro_rules! impl_runtime_apis_plus_common {
 					xts: Vec<<Block as BlockT>::Extrinsic>,
 				) -> Vec<EthereumTransaction> {
 					xts.into_iter().filter_map(|xt| match xt.0.function {
-						Call::Ethereum(transact { transaction }) => Some(transaction),
+						RuntimeCall::Ethereum(transact { transaction }) => Some(transaction),
 						_ => None
 					}).collect::<Vec<EthereumTransaction>>()
 				}
 
 				fn elasticity() -> Option<Permill> {
-					Some(BaseFee::elasticity())
+					None
 				}
+
+				fn gas_limit_multiplier_support() {}
 			}
 
 			impl fp_rpc::ConvertTransactionRuntimeApi<Block> for Runtime {
@@ -377,6 +379,14 @@ macro_rules! impl_runtime_apis_plus_common {
 				) -> pallet_transaction_payment::FeeDetails<Balance> {
 					TransactionPayment::query_fee_details(uxt, len)
 				}
+
+				fn query_weight_to_fee(weight: Weight) -> Balance {
+					TransactionPayment::weight_to_fee(weight)
+				}
+
+				fn query_length_to_fee(length: u32) -> Balance {
+					TransactionPayment::length_to_fee(length)
+				}
 			}
 
 			impl nimbus_primitives::NimbusApi<Block> for Runtime {
@@ -396,7 +406,6 @@ macro_rules! impl_runtime_apis_plus_common {
 						&parent_header.hash(),
 						&parent_header.digest,
 					);
-					RandomnessCollectiveFlip::on_initialize(block_number);
 
 					// Because the staking solution calculates the next staking set at the beginning
 					// of the first block in the new round, the only way to accurately predict the
@@ -411,23 +420,23 @@ macro_rules! impl_runtime_apis_plus_common {
 							// return false if author mapping not registered like in can_author impl
 							return false
 						};
+						let candidates = pallet_parachain_staking::Pallet::<Self>::compute_top_candidates();
+						if candidates.is_empty() {
+							// If there are zero selected candidates, we use the same eligibility
+							// as the previous round
+							return AuthorInherent::can_author(&author, &slot);
+						}
+
 						// predict eligibility post-selection by computing selection results now
 						let (eligible, _) =
 							pallet_author_slot_filter::compute_pseudo_random_subset::<Self>(
-								pallet_parachain_staking::Pallet::<Self>::compute_top_candidates(),
+								candidates,
 								&slot
 							);
 						eligible.contains(&author_account_id)
 					} else {
 						AuthorInherent::can_author(&author, &slot)
 					}
-				}
-			}
-
-			// We also implement the old AuthorFilterAPI to meet the trait bounds on the client side.
-			impl nimbus_primitives::AuthorFilterAPI<Block, NimbusId> for Runtime {
-				fn can_author(_: NimbusId, _: u32, _: &<Block as BlockT>::Header) -> bool {
-					panic!("AuthorFilterAPI is no longer supported. Please update your client.")
 				}
 			}
 
@@ -463,6 +472,7 @@ macro_rules! impl_runtime_apis_plus_common {
 					Vec<frame_support::traits::StorageInfo>,
 				) {
 					use frame_benchmarking::{list_benchmark, Benchmarking, BenchmarkList};
+					use moonbeam_xcm_benchmarks::generic::benchmarking as MoonbeamXcmBenchmarks;
 					use frame_support::traits::StorageInfoTrait;
 					use frame_system_benchmarking::Pallet as SystemBench;
 					use pallet_crowdloan_rewards::Pallet as PalletCrowdloanRewardsBench;
@@ -474,6 +484,8 @@ macro_rules! impl_runtime_apis_plus_common {
 					use pallet_asset_manager::Pallet as PalletAssetManagerBench;
 					use pallet_xcm_transactor::Pallet as XcmTransactorBench;
 					use pallet_randomness::Pallet as RandomnessBench;
+					use pallet_migrations::Pallet as MigrationsBench;
+					use MoonbeamXcmBenchmarks::XcmGenericBenchmarks as MoonbeamXcmGenericBench;
 
 					let mut list = Vec::<BenchmarkList>::new();
 
@@ -487,6 +499,13 @@ macro_rules! impl_runtime_apis_plus_common {
 					list_benchmark!(list, extra, pallet_asset_manager, PalletAssetManagerBench::<Runtime>);
 					list_benchmark!(list, extra, xcm_transactor, XcmTransactorBench::<Runtime>);
 					list_benchmark!(list, extra, pallet_randomness, RandomnessBench::<Runtime>);
+					list_benchmark!(
+						list,
+						extra,
+						moonbeam_xcm_benchmarks_generic,
+						MoonbeamXcmGenericBench::<Runtime>
+					);
+					list_benchmark!(list, extra, pallet_migrations, MigrationsBench::<Runtime>);
 
 					let storage_info = AllPalletsWithSystem::storage_info();
 
@@ -500,8 +519,113 @@ macro_rules! impl_runtime_apis_plus_common {
 						add_benchmark, BenchmarkBatch, Benchmarking, TrackedStorageKey,
 					};
 
+					use xcm::latest::prelude::*;
+					use frame_benchmarking::BenchmarkError;
+
 					use frame_system_benchmarking::Pallet as SystemBench;
 					impl frame_system_benchmarking::Config for Runtime {}
+
+					impl moonbeam_xcm_benchmarks::Config for Runtime {}
+					impl moonbeam_xcm_benchmarks::generic::Config for Runtime {}
+
+					use pallet_asset_manager::Config as PalletAssetManagerConfig;
+					impl pallet_xcm_benchmarks::Config for Runtime {
+						type XcmConfig = xcm_config::XcmExecutorConfig;
+						type AccountIdConverter = xcm_config::LocationToAccountId;
+						fn valid_destination() -> Result<MultiLocation, BenchmarkError> {
+							Ok(MultiLocation::parent())
+						}
+						fn worst_case_holding(_depositable_count: u32) -> MultiAssets {
+						// 100 fungibles
+							const HOLDING_FUNGIBLES: u32 = 100;
+							let fungibles_amount: u128 = 100;
+							let assets = (0..HOLDING_FUNGIBLES).map(|i| {
+								let location: MultiLocation = GeneralIndex(i as u128).into();
+								MultiAsset {
+									id: Concrete(location),
+									fun: Fungible(fungibles_amount * i as u128),
+								}
+								.into()
+							})
+							.chain(
+								core::iter::once(
+									MultiAsset {
+										id: Concrete(MultiLocation::parent()),
+										fun: Fungible(u128::MAX)
+									}
+								)
+							)
+							.collect::<Vec<_>>();
+
+
+							for (i, asset) in assets.iter().enumerate() {
+								if let MultiAsset {
+									id: Concrete(location),
+									fun: Fungible(_)
+								} = asset {
+									<AssetManager as xcm_primitives::AssetTypeGetter<
+										<Runtime as PalletAssetManagerConfig>::AssetId,
+										<Runtime as PalletAssetManagerConfig>::ForeignAssetType>
+									>::set_asset_type_asset_id(
+										location.clone().into(),
+										i as u128
+									);
+									// set 1-1
+									<AssetManager as xcm_primitives::UnitsToWeightRatio<
+										<Runtime as PalletAssetManagerConfig>::ForeignAssetType>
+									>::set_units_per_second(
+										location.clone().into(),
+										1_000_000_000_000u128
+									);
+								}
+							}
+							assets.into()
+						}
+					}
+
+					impl pallet_xcm_benchmarks::generic::Config for Runtime {
+						type RuntimeCall = RuntimeCall;
+
+						fn worst_case_response() -> (u64, Response) {
+							(0u64, Response::Version(Default::default()))
+						}
+
+						fn worst_case_asset_exchange()
+							-> Result<(MultiAssets, MultiAssets), BenchmarkError> {
+							Err(BenchmarkError::Skip)
+						}
+
+						fn universal_alias() -> Result<Junction, BenchmarkError> {
+							Err(BenchmarkError::Skip)
+						}
+
+						fn transact_origin_and_runtime_call()
+							-> Result<(MultiLocation, RuntimeCall), BenchmarkError> {
+							Ok((MultiLocation::parent(), frame_system::Call::remark_with_event {
+								remark: vec![]
+							}.into()))
+						}
+
+						fn subscribe_origin() -> Result<MultiLocation, BenchmarkError> {
+							Ok(MultiLocation::parent())
+						}
+
+						fn claimable_asset()
+							-> Result<(MultiLocation, MultiLocation, MultiAssets), BenchmarkError> {
+							let origin = MultiLocation::parent();
+							let assets: MultiAssets = (Concrete(MultiLocation::parent()), 1_000u128)
+								.into();
+							let ticket = MultiLocation { parents: 0, interior: Here };
+							Ok((origin, ticket, assets))
+						}
+
+						fn unlockable_asset()
+							-> Result<(MultiLocation, MultiLocation, MultiAsset), BenchmarkError> {
+							Err(BenchmarkError::Skip)
+						}
+					}
+
+					use moonbeam_xcm_benchmarks::generic::benchmarking as MoonbeamXcmBenchmarks;
 
 					use pallet_crowdloan_rewards::Pallet as PalletCrowdloanRewardsBench;
 					use pallet_parachain_staking::Pallet as ParachainStakingBench;
@@ -512,6 +636,8 @@ macro_rules! impl_runtime_apis_plus_common {
 					use pallet_asset_manager::Pallet as PalletAssetManagerBench;
 					use pallet_xcm_transactor::Pallet as XcmTransactorBench;
 					use pallet_randomness::Pallet as RandomnessBench;
+					use pallet_migrations::Pallet as MigrationsBench;
+					use MoonbeamXcmBenchmarks::XcmGenericBenchmarks as MoonbeamXcmGenericBench;
 
 					let whitelist: Vec<TrackedStorageKey> = vec![
 						// Block Number
@@ -623,6 +749,20 @@ macro_rules! impl_runtime_apis_plus_common {
 						RandomnessBench::<Runtime>
 					);
 
+					add_benchmark!(
+						params,
+						batches,
+						pallet_migrations,
+						MigrationsBench::<Runtime>
+					);
+
+					add_benchmark!(
+						params,
+						batches,
+						moonbeam_xcm_benchmarks_generic,
+						MoonbeamXcmGenericBench::<Runtime>
+					);
+
 					if batches.is_empty() {
 						return Err("Benchmark not found for this pallet.".into());
 					}
@@ -632,18 +772,36 @@ macro_rules! impl_runtime_apis_plus_common {
 
 			#[cfg(feature = "try-runtime")]
 			impl frame_try_runtime::TryRuntime<Block> for Runtime {
-				fn on_runtime_upgrade() -> (Weight, Weight) {
+				fn on_runtime_upgrade(checks: frame_try_runtime::UpgradeCheckSelect) -> (Weight, Weight) {
 					log::info!("try-runtime::on_runtime_upgrade()");
 					// NOTE: intentional expect: we don't want to propagate the error backwards,
 					// and want to have a backtrace here. If any of the pre/post migration checks
 					// fail, we shall stop right here and right now.
-					let weight = Executive::try_runtime_upgrade()
+					let weight = Executive::try_runtime_upgrade(checks)
 						.expect("runtime upgrade logic *must* be infallible");
-					(weight, BlockWeights::get().max_block)
+					(weight, RuntimeBlockWeights::get().max_block)
 				}
 
-				fn execute_block_no_check(block: Block) -> Weight {
-					Executive::execute_block_no_check(block)
+				fn execute_block(
+					block: Block,
+					state_root_check: bool,
+					signature_check: bool,
+					select: frame_try_runtime::TryStateSelect
+				) -> Weight {
+					log::info!(
+						"try-runtime: executing block {:?} / root checks: {:?} / try-state-select: {:?}",
+						block.header.hash(),
+						state_root_check,
+						select,
+					);
+					// NOTE: intentional unwrap: we don't want to propagate the error backwards,
+					// and want to have a backtrace here.
+					Executive::try_execute_block(
+						block,
+						state_root_check,
+						signature_check,
+						select,
+					).expect("execute-block failed")
 				}
 			}
 		}

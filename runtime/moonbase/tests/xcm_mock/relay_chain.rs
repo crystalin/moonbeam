@@ -19,23 +19,25 @@
 use frame_support::{
 	construct_runtime, parameter_types,
 	traits::{Everything, Nothing},
-	weights::Weight,
 };
 use sp_core::H256;
 use sp_runtime::{
-	traits::{BlakeTwo256, IdentityLookup},
+	traits::{BlakeTwo256, ConstU32, IdentityLookup},
 	AccountId32,
 };
 
+use frame_support::weights::Weight;
 use polkadot_parachain::primitives::Id as ParaId;
-use polkadot_runtime_parachains::{configuration, origin, shared, ump};
+use polkadot_runtime_parachains::{configuration, dmp, hrmp, origin, paras, shared, ump};
+use sp_runtime::transaction_validity::TransactionPriority;
+use sp_runtime::Permill;
 use xcm::latest::prelude::*;
 use xcm_builder::{
 	Account32Hash, AccountId32Aliases, AllowKnownQueryResponses, AllowSubscriptionsFrom,
 	AllowTopLevelPaidExecutionFrom, ChildParachainAsNative, ChildParachainConvertsVia,
 	ChildSystemParachainAsSuperuser, CurrencyAdapter as XcmCurrencyAdapter, FixedRateOfFungible,
-	FixedWeightBounds, IsConcrete, LocationInverter, SignedAccountId32AsNative,
-	SignedToAccountId32, SovereignSignedViaLocation, TakeWeightCredit,
+	FixedWeightBounds, IsConcrete, SignedAccountId32AsNative, SignedToAccountId32,
+	SovereignSignedViaLocation, TakeWeightCredit,
 };
 use xcm_executor::{Config, XcmExecutor};
 pub type AccountId = AccountId32;
@@ -47,8 +49,8 @@ parameter_types! {
 }
 
 impl frame_system::Config for Runtime {
-	type Origin = Origin;
-	type Call = Call;
+	type RuntimeOrigin = RuntimeOrigin;
+	type RuntimeCall = RuntimeCall;
 	type Index = u64;
 	type BlockNumber = BlockNumber;
 	type Hash = H256;
@@ -56,7 +58,7 @@ impl frame_system::Config for Runtime {
 	type AccountId = AccountId;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = sp_runtime::generic::Header<BlockNumber, BlakeTwo256>;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type BlockHashCount = BlockHashCount;
 	type BlockWeights = ();
 	type BlockLength = ();
@@ -70,7 +72,7 @@ impl frame_system::Config for Runtime {
 	type SystemWeightInfo = ();
 	type SS58Prefix = ();
 	type OnSetCode = ();
-	type MaxConsumers = frame_support::traits::ConstU32<16>;
+	type MaxConsumers = ConstU32<16>;
 }
 
 parameter_types! {
@@ -82,7 +84,7 @@ parameter_types! {
 impl pallet_balances::Config for Runtime {
 	type MaxLocks = MaxLocks;
 	type Balance = Balance;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type DustRemoval = ();
 	type ExistentialDeposit = ExistentialDeposit;
 	type AccountStore = System;
@@ -92,8 +94,8 @@ impl pallet_balances::Config for Runtime {
 }
 
 impl pallet_utility::Config for Runtime {
-	type Event = Event;
-	type Call = Call;
+	type RuntimeEvent = RuntimeEvent;
+	type RuntimeCall = RuntimeCall;
 	type WeightInfo = ();
 	type PalletsOrigin = OriginCaller;
 }
@@ -105,11 +107,10 @@ impl configuration::Config for Runtime {
 }
 
 parameter_types! {
-	pub const KsmLocation: MultiLocation = Here.into();
+	pub KsmLocation: MultiLocation = Here.into();
 	pub const KusamaNetwork: NetworkId = NetworkId::Kusama;
-	pub const AnyNetwork: NetworkId = NetworkId::Any;
-	pub Ancestry: MultiLocation = Here.into();
-	pub UnitWeightCost: Weight = 1_000;
+	pub const AnyNetwork: Option<NetworkId> = None;
+	pub UniversalLocation: InteriorMultiLocation = Here;
 }
 
 pub type SovereignAccountOf = (
@@ -124,16 +125,18 @@ pub type LocalAssetTransactor =
 	XcmCurrencyAdapter<Balances, IsConcrete<KsmLocation>, SovereignAccountOf, AccountId, ()>;
 
 type LocalOriginConverter = (
-	SovereignSignedViaLocation<SovereignAccountOf, Origin>,
-	ChildParachainAsNative<origin::Origin, Origin>,
-	SignedAccountId32AsNative<KusamaNetwork, Origin>,
-	ChildSystemParachainAsSuperuser<ParaId, Origin>,
+	SovereignSignedViaLocation<SovereignAccountOf, RuntimeOrigin>,
+	ChildParachainAsNative<origin::Origin, RuntimeOrigin>,
+	SignedAccountId32AsNative<KusamaNetwork, RuntimeOrigin>,
+	ChildSystemParachainAsSuperuser<ParaId, RuntimeOrigin>,
 );
 
 parameter_types! {
-	pub const BaseXcmWeight: Weight = 1_000;
-	pub KsmPerSecond: (AssetId, u128) = (Concrete(KsmLocation::get()), 1);
+	pub const BaseXcmWeight: Weight = Weight::from_parts(1000u64, 1000u64);
+	pub KsmPerSecond: (AssetId, u128, u128) = (Concrete(KsmLocation::get()), 1, 1);
 	pub const MaxInstructions: u32 = 100;
+	pub const MaxAssetsIntoHolding: u32 = 64;
+	pub MatcherLocation: MultiLocation = MultiLocation::here();
 }
 
 pub type XcmRouter = super::RelayChainXcmRouter;
@@ -149,41 +152,55 @@ pub type Barrier = (
 
 pub struct XcmConfig;
 impl Config for XcmConfig {
-	type Call = Call;
+	type RuntimeCall = RuntimeCall;
 	type XcmSender = XcmRouter;
 	type AssetTransactor = LocalAssetTransactor;
 	type OriginConverter = LocalOriginConverter;
 	type IsReserve = ();
 	type IsTeleporter = ();
-	type LocationInverter = LocationInverter<Ancestry>;
+	type UniversalLocation = UniversalLocation;
 	type Barrier = Barrier;
-	type Weigher = FixedWeightBounds<BaseXcmWeight, Call, MaxInstructions>;
+	type Weigher = FixedWeightBounds<BaseXcmWeight, RuntimeCall, MaxInstructions>;
 	type Trader = FixedRateOfFungible<KsmPerSecond, ()>;
 	type ResponseHandler = XcmPallet;
 	type AssetTrap = XcmPallet;
 	type AssetClaims = XcmPallet;
 	type SubscriptionService = XcmPallet;
-	type CallDispatcher = Call;
+	type CallDispatcher = RuntimeCall;
+	type AssetLocker = ();
+	type AssetExchanger = ();
+	type PalletInstancesInfo = ();
+	type MaxAssetsIntoHolding = MaxAssetsIntoHolding;
+	type FeeManager = ();
+	type MessageExporter = ();
+	type UniversalAliases = Nothing;
+	type SafeCallFilter = Everything;
 }
 
-pub type LocalOriginToLocation = SignedToAccountId32<Origin, AccountId, KusamaNetwork>;
+pub type LocalOriginToLocation = SignedToAccountId32<RuntimeOrigin, AccountId, KusamaNetwork>;
 
 impl pallet_xcm::Config for Runtime {
-	type Event = Event;
-	type SendXcmOrigin = xcm_builder::EnsureXcmOrigin<Origin, LocalOriginToLocation>;
+	type RuntimeEvent = RuntimeEvent;
+	type SendXcmOrigin = xcm_builder::EnsureXcmOrigin<RuntimeOrigin, LocalOriginToLocation>;
 	type XcmRouter = XcmRouter;
 	// Anyone can execute XCM messages locally...
-	type ExecuteXcmOrigin = xcm_builder::EnsureXcmOrigin<Origin, LocalOriginToLocation>;
+	type ExecuteXcmOrigin = xcm_builder::EnsureXcmOrigin<RuntimeOrigin, LocalOriginToLocation>;
 	type XcmExecuteFilter = Nothing;
 	type XcmExecutor = XcmExecutor<XcmConfig>;
 	type XcmTeleportFilter = Everything;
 	type XcmReserveTransferFilter = Everything;
-	type Weigher = FixedWeightBounds<BaseXcmWeight, Call, MaxInstructions>;
-	type LocationInverter = LocationInverter<Ancestry>;
-	type Origin = Origin;
-	type Call = Call;
+	type Weigher = FixedWeightBounds<BaseXcmWeight, RuntimeCall, MaxInstructions>;
+	type UniversalLocation = UniversalLocation;
+	type RuntimeOrigin = RuntimeOrigin;
+	type RuntimeCall = RuntimeCall;
 	const VERSION_DISCOVERY_QUEUE_SIZE: u32 = 100;
 	type AdvertisedXcmVersion = pallet_xcm::CurrentXcmVersion;
+	type Currency = Balances;
+	type CurrencyMatcher = ();
+	type TrustedLockers = ();
+	type SovereignAccountOf = ();
+	type MaxLockers = ConstU32<8>;
+	type WeightInfo = pallet_xcm::TestWeightInfo;
 }
 
 parameter_types! {
@@ -191,11 +208,57 @@ parameter_types! {
 }
 
 impl ump::Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type UmpSink = ump::XcmSink<XcmExecutor<XcmConfig>, Runtime>;
 	type FirstMessageFactorPercent = FirstMessageFactorPercent;
 	type ExecuteOverweightOrigin = frame_system::EnsureRoot<AccountId>;
 	type WeightInfo = ump::TestWeightInfo;
+}
+
+parameter_types! {
+	pub const ParasUnsignedPriority: TransactionPriority = TransactionPriority::max_value();
+}
+
+/// A very dumb implementation of `EstimateNextSessionRotation`. At the moment of writing, this
+/// is more to satisfy type requirements rather than to test anything.
+pub struct TestNextSessionRotation;
+
+impl frame_support::traits::EstimateNextSessionRotation<u32> for TestNextSessionRotation {
+	fn average_session_length() -> u32 {
+		10
+	}
+
+	fn estimate_current_session_progress(_now: u32) -> (Option<Permill>, Weight) {
+		(None, Weight::zero())
+	}
+
+	fn estimate_next_session_rotation(_now: u32) -> (Option<u32>, Weight) {
+		(None, Weight::zero())
+	}
+}
+
+impl paras::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type WeightInfo = paras::TestWeightInfo;
+	type UnsignedPriority = ParasUnsignedPriority;
+	type NextSessionRotation = TestNextSessionRotation;
+}
+
+impl dmp::Config for Runtime {}
+
+impl hrmp::Config for Runtime {
+	type RuntimeOrigin = RuntimeOrigin;
+	type RuntimeEvent = RuntimeEvent;
+	type Currency = Balances;
+	type WeightInfo = TestHrmpWeightInfo;
+}
+
+impl<C> frame_system::offchain::SendTransactionTypes<C> for Runtime
+where
+	RuntimeCall: From<C>,
+{
+	type Extrinsic = UncheckedExtrinsic;
+	type OverarchingCall = RuntimeCall;
 }
 
 impl origin::Config for Runtime {}
@@ -215,10 +278,14 @@ construct_runtime!(
 		ParasUmp: ump::{Pallet, Call, Storage, Event},
 		XcmPallet: pallet_xcm::{Pallet, Call, Storage, Event<T>, Origin},
 		Utility: pallet_utility::{Pallet, Call, Event},
+		Hrmp: hrmp::{Pallet, Call, Storage, Event<T>, Config},
+		Dmp: dmp::{Pallet, Call, Storage},
+		Paras: paras::{Pallet, Call, Storage, Event, Config, ValidateUnsigned},
+		Configuration: configuration::{Pallet, Call, Storage, Config<T>},
 	}
 );
 
-pub(crate) fn relay_events() -> Vec<Event> {
+pub(crate) fn relay_events() -> Vec<RuntimeEvent> {
 	System::events()
 		.into_iter()
 		.map(|r| r.event)
@@ -236,5 +303,38 @@ pub(crate) fn relay_roll_to(n: BlockNumber) {
 		System::on_initialize(System::block_number());
 		Balances::on_initialize(System::block_number());
 		XcmPallet::on_initialize(System::block_number());
+	}
+}
+
+/// A weight info that is only suitable for testing.
+pub struct TestHrmpWeightInfo;
+
+impl hrmp::WeightInfo for TestHrmpWeightInfo {
+	fn hrmp_accept_open_channel() -> Weight {
+		Weight::from_ref_time(1 as u64)
+	}
+	fn force_clean_hrmp(_: u32, _: u32) -> Weight {
+		Weight::from_ref_time(1 as u64)
+	}
+	fn force_process_hrmp_close(_: u32) -> Weight {
+		Weight::from_ref_time(1 as u64)
+	}
+	fn force_process_hrmp_open(_: u32) -> Weight {
+		Weight::from_ref_time(1 as u64)
+	}
+	fn hrmp_cancel_open_request(_: u32) -> Weight {
+		Weight::from_ref_time(1 as u64)
+	}
+	fn hrmp_close_channel() -> Weight {
+		Weight::from_ref_time(1 as u64)
+	}
+	fn hrmp_init_open_channel() -> Weight {
+		Weight::from_ref_time(1 as u64)
+	}
+	fn clean_open_channel_requests(_: u32) -> Weight {
+		Weight::from_ref_time(1 as u64)
+	}
+	fn force_open_hrmp_channel() -> Weight {
+		Weight::from_ref_time(1 as u64)
 	}
 }

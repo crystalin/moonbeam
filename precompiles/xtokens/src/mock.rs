@@ -16,38 +16,33 @@
 
 //! Test utilities
 use super::*;
-use codec::{Decode, Encode, MaxEncodedLen};
-use fp_evm::Precompile;
-use frame_support::{construct_runtime, parameter_types};
-use frame_support::{
-	traits::{EnsureOrigin, Everything, OriginTrait, PalletInfo as PalletInfoTrait},
-	weights::Weight,
+use frame_support::traits::{
+	ConstU32, EnsureOrigin, Everything, Nothing, OriginTrait, PalletInfo as PalletInfoTrait,
 };
+use frame_support::{construct_runtime, parameter_types, weights::Weight};
 use orml_traits::{location::AbsoluteReserveProvider, parameter_type_with_key};
-use pallet_evm::{AddressMapping, EnsureAddressNever, EnsureAddressRoot, PrecompileSet};
-use serde::{Deserialize, Serialize};
+use pallet_evm::{EnsureAddressNever, EnsureAddressRoot};
+use parity_scale_codec::{Decode, Encode};
+use precompile_utils::{
+	mock_account,
+	precompile_set::*,
+	testing::{AddressInPrefixedSet, MockAccount},
+};
+use scale_info::TypeInfo;
 use sp_core::H256;
 use sp_io;
 use sp_runtime::traits::{BlakeTwo256, IdentityLookup};
-use xcm::latest::{
-	Error as XcmError,
-	Junction::{AccountKey20, GeneralIndex, PalletInstance, Parachain},
-	Junctions, MultiAsset, MultiLocation, NetworkId, Result as XcmResult, SendResult, SendXcm, Xcm,
-};
-
-use scale_info::TypeInfo;
-
-use xcm_builder::{AllowUnpaidExecutionFrom, FixedWeightBounds};
-
+use xcm::latest::{prelude::*, Error as XcmError};
+use xcm_builder::{AllowUnpaidExecutionFrom, FixedWeightBounds, IsConcrete};
 use xcm_executor::{
-	traits::{InvertLocation, TransactAsset, WeightTrader},
+	traits::{TransactAsset, WeightTrader},
 	Assets, XcmExecutor,
 };
 
-pub type AccountId = TestAccount;
+pub type AccountId = MockAccount;
 pub type Balance = u128;
 pub type BlockNumber = u32;
-pub const PRECOMPILE_ADDRESS: u64 = 1;
+pub type AssetId = u128;
 
 type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Runtime>;
 type Block = frame_system::mocking::MockBlock<Runtime>;
@@ -68,88 +63,11 @@ construct_runtime!(
 	}
 );
 
-// FRom https://github.com/PureStake/moonbeam/pull/518. Merge to common once is merged
-#[derive(
-	Eq,
-	PartialEq,
-	Ord,
-	PartialOrd,
-	Clone,
-	Copy,
-	Encode,
-	Decode,
-	Debug,
-	MaxEncodedLen,
-	Serialize,
-	Deserialize,
-	derive_more::Display,
-	TypeInfo,
-)]
-pub enum TestAccount {
-	Alice,
-	Bob,
-	Charlie,
-	AssetId(u128),
-	SelfReserve,
-	Bogus,
-	Precompile,
-}
-
-impl Default for TestAccount {
-	fn default() -> Self {
-		Self::Bogus
-	}
-}
-
-impl AddressMapping<TestAccount> for TestAccount {
-	fn into_account_id(h160_account: H160) -> TestAccount {
-		match h160_account {
-			a if a == H160::repeat_byte(0xAA) => Self::Alice,
-			a if a == H160::repeat_byte(0xBB) => Self::Bob,
-			a if a == H160::repeat_byte(0xCC) => Self::Charlie,
-			a if a == H160::repeat_byte(0xDD) => Self::SelfReserve,
-			a if a == H160::from_low_u64_be(PRECOMPILE_ADDRESS) => Self::Precompile,
-			_ => {
-				let mut data = [0u8; 16];
-				let (prefix_part, id_part) = h160_account.as_fixed_bytes().split_at(4);
-				if prefix_part == &[255u8; 4] {
-					data.copy_from_slice(id_part);
-
-					return Self::AssetId(u128::from_be_bytes(data));
-				}
-				Self::Bogus
-			}
-		}
-	}
-}
-
-impl From<H160> for TestAccount {
-	fn from(x: H160) -> TestAccount {
-		TestAccount::into_account_id(x)
-	}
-}
-
-impl From<TestAccount> for H160 {
-	fn from(value: TestAccount) -> H160 {
-		match value {
-			TestAccount::Alice => H160::repeat_byte(0xAA),
-			TestAccount::Bob => H160::repeat_byte(0xBB),
-			TestAccount::Charlie => H160::repeat_byte(0xCC),
-			TestAccount::Precompile => H160::from_low_u64_be(PRECOMPILE_ADDRESS),
-			TestAccount::SelfReserve => H160::repeat_byte(0xDD),
-			TestAccount::AssetId(asset_id) => {
-				let mut data = [0u8; 20];
-				let id_as_bytes = asset_id.to_be_bytes();
-				data[0..4].copy_from_slice(&[255u8; 4]);
-				data[4..20].copy_from_slice(&id_as_bytes);
-				H160::from_slice(&data)
-			}
-			TestAccount::Bogus => Default::default(),
-		}
-	}
-}
-
-pub type AssetId = u128;
+mock_account!(AssetAccount(u128), |v: AssetAccount| AddressInPrefixedSet(
+	0xffffffff, v.0
+)
+.into());
+mock_account!(SelfReserveAccount, |_| MockAccount::from_u64(2));
 
 parameter_types! {
 	pub ParachainId: cumulus_primitives_core::ParaId = 100.into();
@@ -162,16 +80,16 @@ parameter_types! {
 impl frame_system::Config for Runtime {
 	type BaseCallFilter = Everything;
 	type DbWeight = ();
-	type Origin = Origin;
+	type RuntimeOrigin = RuntimeOrigin;
 	type Index = u64;
 	type BlockNumber = BlockNumber;
-	type Call = Call;
+	type RuntimeCall = RuntimeCall;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
-	type AccountId = TestAccount;
+	type AccountId = AccountId;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = sp_runtime::generic::Header<BlockNumber, BlakeTwo256>;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type BlockHashCount = BlockHashCount;
 	type Version = ();
 	type PalletInfo = PalletInfo;
@@ -193,7 +111,7 @@ impl pallet_balances::Config for Runtime {
 	type ReserveIdentifier = ();
 	type MaxLocks = ();
 	type Balance = Balance;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type DustRemoval = ();
 	type ExistentialDeposit = ExistentialDeposit;
 	type AccountStore = System;
@@ -210,51 +128,35 @@ parameter_types! {
 	pub const MetadataDepositPerByte: Balance = 0;
 }
 
-pub struct TestPrecompiles<R>(PhantomData<R>);
-
-impl<R> PrecompileSet for TestPrecompiles<R>
-where
-	XtokensPrecompile<R>: Precompile,
-{
-	fn execute(&self, handle: &mut impl PrecompileHandle) -> Option<EvmResult<PrecompileOutput>> {
-		match handle.code_address() {
-			a if a == precompile_address() => Some(XtokensPrecompile::<R>::execute(handle)),
-			_ => None,
-		}
-	}
-
-	fn is_precompile(&self, address: H160) -> bool {
-		address == precompile_address()
-	}
-}
+pub type Precompiles<R> =
+	PrecompileSetBuilder<R, (PrecompileAt<AddressU64<1>, XtokensPrecompile<R>>,)>;
 
 pub type PCall = XtokensPrecompileCall<Runtime>;
 
-pub fn precompile_address() -> H160 {
-	H160::from_low_u64_be(1)
-}
-
 parameter_types! {
 	pub BlockGasLimit: U256 = U256::max_value();
-	pub const PrecompilesValue: TestPrecompiles<Runtime> = TestPrecompiles(PhantomData);
+	pub PrecompilesValue: Precompiles<Runtime> = Precompiles::new();
+	pub const WeightPerGas: Weight = Weight::from_ref_time(1);
 }
 
 impl pallet_evm::Config for Runtime {
 	type FeeCalculator = ();
-	type GasWeightMapping = ();
-	type CallOrigin = EnsureAddressRoot<TestAccount>;
-	type WithdrawOrigin = EnsureAddressNever<TestAccount>;
-	type AddressMapping = TestAccount;
+	type GasWeightMapping = pallet_evm::FixedGasWeightMapping<Self>;
+	type WeightPerGas = WeightPerGas;
+	type CallOrigin = EnsureAddressRoot<AccountId>;
+	type WithdrawOrigin = EnsureAddressNever<AccountId>;
+	type AddressMapping = AccountId;
 	type Currency = Balances;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type Runner = pallet_evm::runner::stack::Runner<Self>;
-	type PrecompilesType = TestPrecompiles<Self>;
+	type PrecompilesType = Precompiles<Self>;
 	type PrecompilesValue = PrecompilesValue;
 	type ChainId = ();
 	type OnChargeTransaction = ();
 	type BlockGasLimit = BlockGasLimit;
 	type BlockHashMapping = pallet_evm::SubstrateBlockHashMapping<Self>;
 	type FindAuthor = ();
+	type OnCreate = ();
 }
 
 parameter_types! {
@@ -282,8 +184,17 @@ impl<Origin: OriginTrait> EnsureOrigin<Origin> for ConvertOriginToLocal {
 
 pub struct DoNothingRouter;
 impl SendXcm for DoNothingRouter {
-	fn send_xcm(_dest: impl Into<MultiLocation>, _msg: Xcm<()>) -> SendResult {
-		Ok(())
+	type Ticket = ();
+
+	fn validate(
+		_destination: &mut Option<MultiLocation>,
+		_message: &mut Option<Xcm<()>>,
+	) -> SendResult<Self::Ticket> {
+		Ok(((), MultiAssets::new()))
+	}
+
+	fn deliver(_: Self::Ticket) -> Result<XcmHash, SendError> {
+		Ok(XcmHash::default())
 	}
 }
 
@@ -291,11 +202,15 @@ pub type Barrier = AllowUnpaidExecutionFrom<Everything>;
 
 pub struct DummyAssetTransactor;
 impl TransactAsset for DummyAssetTransactor {
-	fn deposit_asset(_what: &MultiAsset, _who: &MultiLocation) -> XcmResult {
+	fn deposit_asset(_what: &MultiAsset, _who: &MultiLocation, _context: &XcmContext) -> XcmResult {
 		Ok(())
 	}
 
-	fn withdraw_asset(_what: &MultiAsset, _who: &MultiLocation) -> Result<Assets, XcmError> {
+	fn withdraw_asset(
+		_what: &MultiAsset,
+		_who: &MultiLocation,
+		_maybe_context: Option<&XcmContext>,
+	) -> Result<Assets, XcmError> {
 		Ok(Assets::default())
 	}
 }
@@ -311,53 +226,63 @@ impl WeightTrader for DummyWeightTrader {
 	}
 }
 
-pub struct InvertNothing;
-impl InvertLocation for InvertNothing {
-	fn invert_location(_: &MultiLocation) -> sp_std::result::Result<MultiLocation, ()> {
-		Ok(MultiLocation::here())
-	}
-
-	fn ancestry() -> MultiLocation {
-		MultiLocation::here()
-	}
+parameter_types! {
+	pub UniversalLocation: InteriorMultiLocation = Here;
+	pub MatcherLocation: MultiLocation = MultiLocation::here();
+	pub ReachableDest: Option<MultiLocation> = Some(MultiLocation::here());
+	pub const MaxAssetsIntoHolding: u32 = 64;
 }
 
 impl pallet_xcm::Config for Runtime {
 	// The config types here are entirely configurable, since the only one that is sorely needed
 	// is `XcmExecutor`, which will be used in unit tests located in xcm-executor.
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type ExecuteXcmOrigin = ConvertOriginToLocal;
-	type LocationInverter = InvertNothing;
+	type UniversalLocation = UniversalLocation;
 	type SendXcmOrigin = ConvertOriginToLocal;
-	type Weigher = xcm_builder::FixedWeightBounds<BaseXcmWeight, Call, MaxInstructions>;
+	type Weigher = xcm_builder::FixedWeightBounds<BaseXcmWeight, RuntimeCall, MaxInstructions>;
 	type XcmRouter = DoNothingRouter;
 	type XcmExecuteFilter = frame_support::traits::Everything;
 	type XcmExecutor = xcm_executor::XcmExecutor<XcmConfig>;
 	type XcmTeleportFilter = frame_support::traits::Everything;
 	type XcmReserveTransferFilter = frame_support::traits::Everything;
-	type Origin = Origin;
-	type Call = Call;
+	type RuntimeOrigin = RuntimeOrigin;
+	type RuntimeCall = RuntimeCall;
 	const VERSION_DISCOVERY_QUEUE_SIZE: u32 = 100;
 	type AdvertisedXcmVersion = pallet_xcm::CurrentXcmVersion;
+	type Currency = Balances;
+	type CurrencyMatcher = IsConcrete<MatcherLocation>;
+	type TrustedLockers = ();
+	type SovereignAccountOf = ();
+	type MaxLockers = ConstU32<8>;
+	type WeightInfo = pallet_xcm::TestWeightInfo;
 }
 
 pub struct XcmConfig;
 impl xcm_executor::Config for XcmConfig {
-	type Call = Call;
+	type RuntimeCall = RuntimeCall;
 	type XcmSender = DoNothingRouter;
 	type AssetTransactor = DummyAssetTransactor;
-	type OriginConverter = pallet_xcm::XcmPassthrough<Origin>;
+	type OriginConverter = pallet_xcm::XcmPassthrough<RuntimeOrigin>;
 	type IsReserve = ();
 	type IsTeleporter = ();
-	type LocationInverter = InvertNothing;
+	type UniversalLocation = UniversalLocation;
 	type Barrier = Barrier;
-	type Weigher = FixedWeightBounds<BaseXcmWeight, Call, MaxInstructions>;
+	type Weigher = FixedWeightBounds<BaseXcmWeight, RuntimeCall, MaxInstructions>;
 	type Trader = DummyWeightTrader;
 	type ResponseHandler = ();
 	type SubscriptionService = ();
 	type AssetTrap = ();
 	type AssetClaims = ();
-	type CallDispatcher = Call;
+	type CallDispatcher = RuntimeCall;
+	type AssetLocker = ();
+	type AssetExchanger = ();
+	type PalletInstancesInfo = ();
+	type MaxAssetsIntoHolding = MaxAssetsIntoHolding;
+	type FeeManager = ();
+	type MessageExporter = ();
+	type UniversalAliases = Nothing;
+	type SafeCallFilter = Everything;
 }
 
 #[derive(Clone, Eq, Debug, PartialEq, Ord, PartialOrd, Encode, Decode, TypeInfo)]
@@ -366,24 +291,14 @@ pub enum CurrencyId {
 	OtherReserve(AssetId),
 }
 
-impl Into<Option<CurrencyId>> for TestAccount {
-	fn into(self) -> Option<CurrencyId> {
-		match self {
-			TestAccount::SelfReserve => Some(CurrencyId::SelfReserve),
-			TestAccount::AssetId(asset_id) => Some(CurrencyId::OtherReserve(asset_id)),
-			_ => None,
-		}
-	}
-}
-
 // Implement the trait, where we convert AccountId to AssetID
 impl AccountIdToCurrencyId<AccountId, CurrencyId> for Runtime {
 	/// The way to convert an account to assetId is by ensuring that the prefix is 0XFFFFFFFF
 	/// and by taking the lowest 128 bits as the assetId
 	fn account_to_currency_id(account: AccountId) -> Option<CurrencyId> {
 		match account {
-			TestAccount::AssetId(asset_id) => Some(CurrencyId::OtherReserve(asset_id)),
-			TestAccount::SelfReserve => Some(CurrencyId::SelfReserve),
+			a if a.has_prefix_u32(0xffffffff) => Some(CurrencyId::OtherReserve(a.without_prefix())),
+			a if a == AccountId::from(SelfReserveAccount) => Some(CurrencyId::SelfReserve),
 			_ => None,
 		}
 	}
@@ -414,13 +329,13 @@ impl sp_runtime::traits::Convert<CurrencyId, Option<MultiLocation>> for Currency
 }
 
 pub struct AccountIdToMultiLocation;
-impl sp_runtime::traits::Convert<TestAccount, MultiLocation> for AccountIdToMultiLocation {
-	fn convert(account: TestAccount) -> MultiLocation {
+impl sp_runtime::traits::Convert<AccountId, MultiLocation> for AccountIdToMultiLocation {
+	fn convert(account: AccountId) -> MultiLocation {
 		let as_h160: H160 = account.into();
 		MultiLocation::new(
 			1,
 			Junctions::X1(AccountKey20 {
-				network: NetworkId::Any,
+				network: None,
 				key: as_h160.as_fixed_bytes().clone(),
 			}),
 		)
@@ -430,18 +345,21 @@ impl sp_runtime::traits::Convert<TestAccount, MultiLocation> for AccountIdToMult
 parameter_types! {
 	pub Ancestry: MultiLocation = Parachain(ParachainId::get().into()).into();
 
-	pub const BaseXcmWeight: Weight = 1000;
+	pub const BaseXcmWeight: Weight = Weight::from_parts(1000u64, 1000u64);
 	pub const RelayNetwork: NetworkId = NetworkId::Polkadot;
 	pub const MaxAssetsForTransfer: usize = 2;
 
-	pub SelfLocation: MultiLocation = (1, Junctions::X1(Parachain(ParachainId::get().into()))).into();
+	pub SelfLocation: MultiLocation =
+		MultiLocation::new(1, Junctions::X1(Parachain(ParachainId::get().into())));
 
-	pub SelfReserve: MultiLocation = (
+	pub SelfReserve: MultiLocation = MultiLocation::new(
 		1,
 		Junctions::X2(
 			Parachain(ParachainId::get().into()),
-			PalletInstance(<Runtime as frame_system::Config>::PalletInfo::index::<Balances>().unwrap() as u8)
-		)).into();
+			PalletInstance(
+				<Runtime as frame_system::Config>::PalletInfo::index::<Balances>().unwrap() as u8
+			)
+		));
 	pub MaxInstructions: u32 = 100;
 }
 
@@ -452,16 +370,16 @@ parameter_type_with_key! {
 }
 
 impl orml_xtokens::Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type Balance = Balance;
 	type CurrencyId = CurrencyId;
 	type AccountIdToMultiLocation = AccountIdToMultiLocation;
 	type CurrencyIdConvert = CurrencyIdToMultiLocation;
 	type XcmExecutor = XcmExecutor<XcmConfig>;
 	type SelfLocation = SelfLocation;
-	type Weigher = xcm_builder::FixedWeightBounds<BaseXcmWeight, Call, MaxInstructions>;
+	type Weigher = xcm_builder::FixedWeightBounds<BaseXcmWeight, RuntimeCall, MaxInstructions>;
 	type BaseXcmWeight = BaseXcmWeight;
-	type LocationInverter = InvertNothing;
+	type UniversalLocation = UniversalLocation;
 	type MaxAssetsForTransfer = MaxAssetsForTransfer;
 	type MinXcmFee = ParachainMinFee;
 	type MultiLocationsFilter = Everything;
@@ -501,7 +419,7 @@ impl ExtBuilder {
 	}
 }
 
-pub(crate) fn events() -> Vec<Event> {
+pub(crate) fn events() -> Vec<RuntimeEvent> {
 	System::events()
 		.into_iter()
 		.map(|r| r.event)

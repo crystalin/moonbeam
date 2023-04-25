@@ -20,9 +20,9 @@
 //! It is built using clap and inherits behavior from Substrate's sc_cli crate.
 
 use clap::Parser;
-use cli_opt::{account_key::GenerateAccountKey, EthApi, Sealing};
+use moonbeam_cli_opt::{account_key::GenerateAccountKey, EthApi, Sealing};
+use moonbeam_service::chain_spec;
 use sc_cli::{Error as CliError, SubstrateCli};
-use service::chain_spec;
 use std::path::PathBuf;
 
 /// Sub-commands supported by the collator.
@@ -128,6 +128,7 @@ pub struct ExportGenesisWasmCommand {
 }
 
 #[derive(Debug, Parser)]
+#[group(skip)]
 pub struct RunCmd {
 	#[clap(flatten)]
 	pub base: cumulus_client_cli::RunCmd,
@@ -148,14 +149,7 @@ pub struct RunCmd {
 	// pub author_id: Option<NimbusId>,
 
 	/// Enable EVM tracing module on a non-authority node.
-	#[clap(
-		long,
-		conflicts_with = "collator",
-		conflicts_with = "validator",
-		use_value_delimiter = true,
-		require_value_delimiter = true,
-		multiple_values = true
-	)]
+	#[clap(long, value_delimiter = ',')]
 	pub ethapi: Vec<EthApi>,
 
 	/// Number of concurrent tracing tasks. Meant to be shared by both "debug" and "trace" modules.

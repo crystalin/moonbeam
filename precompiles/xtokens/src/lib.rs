@@ -17,15 +17,14 @@
 //! Precompile to xtokens runtime methods via the EVM
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![feature(assert_matches)]
 
 use fp_evm::PrecompileHandle;
 use frame_support::{
-	dispatch::{Dispatchable, GetDispatchInfo, PostDispatchInfo},
+	dispatch::{Dispatchable, GetDispatchInfo, PostDispatchInfo, Weight},
 	traits::Get,
 };
 use pallet_evm::AddressMapping;
-use precompile_utils::{data::String, prelude::*};
+use precompile_utils::prelude::*;
 use sp_core::{H160, U256};
 use sp_std::{
 	boxed::Box,
@@ -34,10 +33,10 @@ use sp_std::{
 	vec::Vec,
 };
 use xcm::{
-	latest::{AssetId, Fungibility, MultiAsset, MultiAssets, MultiLocation},
+	latest::{AssetId, Fungibility, MultiAsset, MultiAssets, MultiLocation, WeightLimit},
 	VersionedMultiAsset, VersionedMultiAssets, VersionedMultiLocation,
 };
-use xcm_primitives::AccountIdToCurrencyId;
+use xcm_primitives::{AccountIdToCurrencyId, DEFAULT_PROOF_SIZE};
 
 #[cfg(test)]
 mod mock;
@@ -68,10 +67,10 @@ pub struct XtokensPrecompile<Runtime>(PhantomData<Runtime>);
 impl<Runtime> XtokensPrecompile<Runtime>
 where
 	Runtime: orml_xtokens::Config + pallet_evm::Config + frame_system::Config,
-	Runtime::Call: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
-	Runtime::Call: From<orml_xtokens::Call<Runtime>>,
-	<Runtime::Call as Dispatchable>::Origin: From<Option<Runtime::AccountId>>,
-	XBalanceOf<Runtime>: TryFrom<U256> + Into<U256> + EvmData,
+	Runtime::RuntimeCall: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
+	Runtime::RuntimeCall: From<orml_xtokens::Call<Runtime>>,
+	<Runtime::RuntimeCall as Dispatchable>::RuntimeOrigin: From<Option<Runtime::AccountId>>,
+	XBalanceOf<Runtime>: TryFrom<U256> + Into<U256> + solidity::Codec,
 	Runtime: AccountIdToCurrencyId<Runtime::AccountId, CurrencyIdOf<Runtime>>,
 {
 	#[precompile::public("transfer(address,uint256,(uint8,bytes[]),uint64)")]
@@ -98,8 +97,8 @@ where
 		let call = orml_xtokens::Call::<Runtime>::transfer {
 			currency_id,
 			amount,
-			dest: Box::new(VersionedMultiLocation::V1(destination)),
-			dest_weight: weight,
+			dest: Box::new(VersionedMultiLocation::V3(destination)),
+			dest_weight_limit: WeightLimit::Limited(Weight::from_parts(weight, DEFAULT_PROOF_SIZE)),
 		};
 
 		RuntimeHelper::<Runtime>::try_dispatch(handle, Some(origin).into(), call)?;
@@ -142,8 +141,8 @@ where
 			currency_id,
 			amount,
 			fee,
-			dest: Box::new(VersionedMultiLocation::V1(destination)),
-			dest_weight: weight,
+			dest: Box::new(VersionedMultiLocation::V3(destination)),
+			dest_weight_limit: WeightLimit::Limited(Weight::from_parts(weight, DEFAULT_PROOF_SIZE)),
 		};
 
 		RuntimeHelper::<Runtime>::try_dispatch(handle, Some(origin).into(), call)?;
@@ -166,12 +165,12 @@ where
 			.map_err(|_| RevertReason::value_is_too_large("balance type").in_field("amount"))?;
 
 		let call = orml_xtokens::Call::<Runtime>::transfer_multiasset {
-			asset: Box::new(VersionedMultiAsset::V1(MultiAsset {
+			asset: Box::new(VersionedMultiAsset::V3(MultiAsset {
 				id: AssetId::Concrete(asset),
 				fun: Fungibility::Fungible(to_balance),
 			})),
-			dest: Box::new(VersionedMultiLocation::V1(destination)),
-			dest_weight: weight,
+			dest: Box::new(VersionedMultiLocation::V3(destination)),
+			dest_weight_limit: WeightLimit::Limited(Weight::from_parts(weight, DEFAULT_PROOF_SIZE)),
 		};
 
 		RuntimeHelper::<Runtime>::try_dispatch(handle, Some(origin).into(), call)?;
@@ -202,16 +201,16 @@ where
 			.map_err(|_| RevertReason::value_is_too_large("balance type").in_field("fee"))?;
 
 		let call = orml_xtokens::Call::<Runtime>::transfer_multiasset_with_fee {
-			asset: Box::new(VersionedMultiAsset::V1(MultiAsset {
+			asset: Box::new(VersionedMultiAsset::V3(MultiAsset {
 				id: AssetId::Concrete(asset.clone()),
 				fun: Fungibility::Fungible(amount),
 			})),
-			fee: Box::new(VersionedMultiAsset::V1(MultiAsset {
+			fee: Box::new(VersionedMultiAsset::V3(MultiAsset {
 				id: AssetId::Concrete(asset),
 				fun: Fungibility::Fungible(fee),
 			})),
-			dest: Box::new(VersionedMultiLocation::V1(destination)),
-			dest_weight: weight,
+			dest: Box::new(VersionedMultiLocation::V3(destination)),
+			dest_weight_limit: WeightLimit::Limited(Weight::from_parts(weight, DEFAULT_PROOF_SIZE)),
 		};
 
 		RuntimeHelper::<Runtime>::try_dispatch(handle, Some(origin).into(), call)?;
@@ -264,8 +263,8 @@ where
 		let call = orml_xtokens::Call::<Runtime>::transfer_multicurrencies {
 			currencies,
 			fee_item,
-			dest: Box::new(VersionedMultiLocation::V1(destination)),
-			dest_weight: weight,
+			dest: Box::new(VersionedMultiLocation::V3(destination)),
+			dest_weight_limit: WeightLimit::Limited(Weight::from_parts(weight, DEFAULT_PROOF_SIZE)),
 		};
 
 		RuntimeHelper::<Runtime>::try_dispatch(handle, Some(origin).into(), call)?;
@@ -311,10 +310,10 @@ where
 			})?;
 
 		let call = orml_xtokens::Call::<Runtime>::transfer_multiassets {
-			assets: Box::new(VersionedMultiAssets::V1(multiassets)),
+			assets: Box::new(VersionedMultiAssets::V3(multiassets)),
 			fee_item,
-			dest: Box::new(VersionedMultiLocation::V1(destination)),
-			dest_weight: weight,
+			dest: Box::new(VersionedMultiLocation::V3(destination)),
+			dest_weight_limit: WeightLimit::Limited(Weight::from_parts(weight, DEFAULT_PROOF_SIZE)),
 		};
 
 		RuntimeHelper::<Runtime>::try_dispatch(handle, Some(origin).into(), call)?;
@@ -324,28 +323,10 @@ where
 }
 
 // Currency
+#[derive(solidity::Codec)]
 pub struct Currency {
 	address: Address,
 	amount: U256,
-}
-// For Currencies
-impl EvmData for Currency {
-	fn read(reader: &mut EvmDataReader) -> MayRevert<Self> {
-		read_struct!(reader, {address: Address, amount: U256});
-		Ok(Currency { address, amount })
-	}
-
-	fn write(writer: &mut EvmDataWriter, value: Self) {
-		EvmData::write(writer, (value.address, value.amount));
-	}
-
-	fn has_static_size() -> bool {
-		<(Address, U256)>::has_static_size()
-	}
-
-	fn solidity_type() -> String {
-		<(Address, U256)>::solidity_type()
-	}
 }
 
 impl From<(Address, U256)> for Currency {
@@ -357,29 +338,10 @@ impl From<(Address, U256)> for Currency {
 	}
 }
 
-// EvmMultiAsset
+#[derive(solidity::Codec)]
 pub struct EvmMultiAsset {
 	location: MultiLocation,
 	amount: U256,
-}
-
-impl EvmData for EvmMultiAsset {
-	fn read(reader: &mut EvmDataReader) -> MayRevert<Self> {
-		read_struct!(reader, {location: MultiLocation, amount: U256});
-		Ok(EvmMultiAsset { location, amount })
-	}
-
-	fn write(writer: &mut EvmDataWriter, value: Self) {
-		EvmData::write(writer, (value.location, value.amount));
-	}
-
-	fn has_static_size() -> bool {
-		<(MultiLocation, U256)>::has_static_size()
-	}
-
-	fn solidity_type() -> String {
-		<(MultiLocation, U256)>::solidity_type()
-	}
 }
 
 impl From<(MultiLocation, U256)> for EvmMultiAsset {

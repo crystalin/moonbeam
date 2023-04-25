@@ -1,4 +1,5 @@
 import "@moonbeam-network/api-augment";
+import { ApiBase } from "@polkadot/api/base";
 
 import {
   BN,
@@ -12,11 +13,19 @@ import {
 import { expect } from "chai";
 import { ethers } from "ethers";
 
-import { alith, baltathar, charleth } from "../../util/accounts";
+import {
+  alith,
+  ALITH_ADDRESS,
+  baltathar,
+  BALTATHAR_ADDRESS,
+  charleth,
+  CHARLETH_ADDRESS,
+  DOROTHY_ADDRESS,
+} from "../../util/accounts";
 import { registerLocalAssetWithMeta } from "../../util/assets";
 import { getCompiled } from "../../util/contracts";
 import { customWeb3Request } from "../../util/providers";
-import { describeDevMoonbeamAllEthTxTypes } from "../../util/setup-dev-tests";
+import { describeDevMoonbeam, describeDevMoonbeamAllEthTxTypes } from "../../util/setup-dev-tests";
 import {
   ALITH_TRANSACTION_TEMPLATE,
   BALTATHAR_TRANSACTION_TEMPLATE,
@@ -34,23 +43,43 @@ const SELECTORS = {
   logApprove: "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
   logTransfer: "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
 };
-const GAS_PRICE = "0x" + (1_000_000_000).toString(16);
+const GAS_PRICE = "0x" + (10_000_000_000).toString(16);
 const LOCAL_ASSET_EXTENDED_ERC20_CONTRACT = getCompiled("LocalAssetExtendedErc20Instance");
+const ROLES_CONTRACT = getCompiled("precompiles/assets-erc20/Roles");
 
 const LOCAL_ASSET_EXTENDED_ERC20_INTERFACE = new ethers.utils.Interface(
   LOCAL_ASSET_EXTENDED_ERC20_CONTRACT.contract.abi
 );
 
+const ROLES_INTERFACE = new ethers.utils.Interface(ROLES_CONTRACT.contract.abi);
+
 describeDevMoonbeamAllEthTxTypes(
   "Precompiles - Assets-ERC20 Wasm",
   (context) => {
     let assetAddress: string;
+    let assetId: string;
     before("Setup contract and mock balance", async () => {
       // register, setMeta & mint local Asset
-      ({ assetAddress } = await registerLocalAssetWithMeta(context, alith, {
+      ({ assetId, assetAddress } = await registerLocalAssetWithMeta(context, alith, {
         registrerAccount: baltathar,
         mints: [{ account: baltathar, amount: 100000000000000n }],
       }));
+
+      // Set team
+      await context.createBlock(
+        context.polkadotApi.tx.localAssets
+          // Issuer, admin, freezer
+          .setTeam(assetId, BALTATHAR_ADDRESS, CHARLETH_ADDRESS, DOROTHY_ADDRESS)
+          .signAsync(baltathar)
+      );
+
+      // Set owner
+      await context.createBlock(
+        context.polkadotApi.tx.localAssets
+          // owner
+          .transferOwnership(assetId, ALITH_ADDRESS)
+          .signAsync(baltathar)
+      );
 
       const { rawTx } = await createContract(context, "LocalAssetExtendedErc20Instance");
       await context.createBlock(rawTx);
@@ -174,6 +203,90 @@ describeDevMoonbeamAllEthTxTypes(
 
       let amount_hex = "0x" + bnToHex(amount).slice(2).padStart(64, "0");
       expect(tx_call.result).equals(amount_hex);
+    });
+
+    it("allows to call owner", async function () {
+      const data = ROLES_INTERFACE.encodeFunctionData(
+        // action
+        "owner",
+        []
+      );
+      const tx_call = await customWeb3Request(context.web3, "eth_call", [
+        {
+          from: alith.address,
+          value: "0x0",
+          gas: "0x10000",
+          gasPrice: GAS_PRICE,
+          to: assetAddress,
+          data: data,
+        },
+      ]);
+
+      const account = "0x" + ALITH_ADDRESS.slice(2).padStart(64, "0");
+      expect(tx_call.result).equals(account.toLocaleLowerCase());
+    });
+
+    it("allows to call freezer", async function () {
+      const data = ROLES_INTERFACE.encodeFunctionData(
+        // action
+        "freezer",
+        []
+      );
+      const tx_call = await customWeb3Request(context.web3, "eth_call", [
+        {
+          from: alith.address,
+          value: "0x0",
+          gas: "0x10000",
+          gasPrice: GAS_PRICE,
+          to: assetAddress,
+          data: data,
+        },
+      ]);
+
+      const account = "0x" + DOROTHY_ADDRESS.slice(2).padStart(64, "0");
+      expect(tx_call.result).equals(account.toLocaleLowerCase());
+    });
+
+    it("allows to call admin", async function () {
+      const data = ROLES_INTERFACE.encodeFunctionData(
+        // action
+        "admin",
+        []
+      );
+      const tx_call = await customWeb3Request(context.web3, "eth_call", [
+        {
+          from: alith.address,
+          value: "0x0",
+          gas: "0x10000",
+          gasPrice: GAS_PRICE,
+          to: assetAddress,
+          data: data,
+        },
+      ]);
+
+      const account = "0x" + CHARLETH_ADDRESS.slice(2).padStart(64, "0");
+      expect(tx_call.result).equals(account.toLocaleLowerCase());
+    });
+
+    it("allows to call issuer", async function () {
+      const data = ROLES_INTERFACE.encodeFunctionData(
+        // action
+        "issuer",
+        []
+      );
+      const tx_call = await customWeb3Request(context.web3, "eth_call", [
+        {
+          from: alith.address,
+          value: "0x0",
+          gas: "0x10000",
+          gasPrice: GAS_PRICE,
+          to: assetAddress,
+          data: data,
+        },
+      ]);
+
+      const account = "0x" + baltathar.address.slice(2).padStart(64, "0");
+      expect(tx_call.result).equals(account.toLocaleLowerCase());
     });
   },
   true
@@ -842,7 +955,7 @@ describeDevMoonbeamAllEthTxTypes(
 
       let alithFrozen = await context.polkadotApi.query.localAssets.account(assetId, alith.address);
 
-      expect(alithFrozen.unwrap()["isFrozen"].toHuman()).to.be.true;
+      expect(alithFrozen.unwrap().isFrozen.isTrue).to.be.true;
     });
   },
   true
@@ -935,7 +1048,7 @@ describeDevMoonbeamAllEthTxTypes(
 
       const registeredAsset = (await context.polkadotApi.query.localAssets.asset(assetId)).unwrap();
 
-      expect(registeredAsset.isFrozen.isTrue).to.be.true;
+      expect(registeredAsset.status.isFrozen).to.be.true;
     });
   },
   true
@@ -980,7 +1093,7 @@ describeDevMoonbeamAllEthTxTypes(
 
       const registeredAsset = (await context.polkadotApi.query.localAssets.asset(assetId)).unwrap();
 
-      expect(registeredAsset.isFrozen.toHuman()).to.be.false;
+      expect(registeredAsset.status.isFrozen).to.be.false;
     });
   },
   true
@@ -1159,3 +1272,66 @@ describeDevMoonbeamAllEthTxTypes(
   },
   true
 );
+
+describeDevMoonbeam("Precompiles - Assets-ERC20 Wasm", (context) => {
+  let assetAddress: string[] = [];
+  before("Setup contract and mock balance", async () => {
+    // register, setMeta & mint local Asset
+    assetAddress[0] = (
+      await registerLocalAssetWithMeta(context, alith, {
+        registrerAccount: baltathar,
+        mints: [{ account: alith, amount: 2n ** 128n - 3n }],
+      })
+    ).assetAddress;
+    assetAddress[1] = (
+      await registerLocalAssetWithMeta(context, alith, {
+        registrerAccount: baltathar,
+        mints: [{ account: alith, amount: 2n ** 128n - 3n }],
+      })
+    ).assetAddress;
+
+    const { rawTx } = await createContract(context, "LocalAssetExtendedErc20Instance");
+    await context.createBlock(rawTx);
+  });
+
+  it("succeeds to mint to 2^128 - 1", async function () {
+    let data = LOCAL_ASSET_EXTENDED_ERC20_INTERFACE.encodeFunctionData(
+      // action
+      "mint",
+      [baltathar.address, 2]
+    );
+
+    const { result } = await context.createBlock(
+      createTransaction(context, {
+        ...BALTATHAR_TRANSACTION_TEMPLATE,
+        to: assetAddress[0],
+        data: data,
+      })
+    );
+
+    const receipt = await context.web3.eth.getTransactionReceipt(result.hash);
+
+    expect(receipt.status).to.equal(true);
+  });
+
+  // Depends on previous test
+  it("fails to mint over 2^128 total supply", async function () {
+    let data = LOCAL_ASSET_EXTENDED_ERC20_INTERFACE.encodeFunctionData(
+      // action
+      "mint",
+      [baltathar.address, 3]
+    );
+
+    const { result } = await context.createBlock(
+      createTransaction(context, {
+        ...BALTATHAR_TRANSACTION_TEMPLATE,
+        to: assetAddress[1],
+        data: data,
+      })
+    );
+
+    const receipt = await context.web3.eth.getTransactionReceipt(result.hash);
+
+    expect(receipt.status).to.equal(false);
+  });
+});

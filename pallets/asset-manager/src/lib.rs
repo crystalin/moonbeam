@@ -112,26 +112,17 @@ pub mod pallet {
 		}
 
 		// How to destroy a foreign asset
-		fn destroy_foreign_asset(
-			_asset: T::AssetId,
-			_witness: T::AssetDestroyWitness,
-		) -> DispatchResult {
+		fn destroy_foreign_asset(_asset: T::AssetId) -> DispatchResult {
 			unimplemented!()
 		}
 
 		// How to destroy a local asset
-		fn destroy_local_asset(
-			_asset: T::AssetId,
-			_witness: T::AssetDestroyWitness,
-		) -> DispatchResult {
+		fn destroy_local_asset(_asset: T::AssetId) -> DispatchResult {
 			unimplemented!()
 		}
 
 		// Get destroy asset weight dispatch info
-		fn destroy_asset_dispatch_info_weight(
-			_asset: T::AssetId,
-			_witness: T::AssetDestroyWitness,
-		) -> Weight;
+		fn destroy_asset_dispatch_info_weight(_asset: T::AssetId) -> Weight;
 	}
 
 	// The local asset id creator. We cannot let users choose assetIds for their assets
@@ -166,11 +157,22 @@ pub mod pallet {
 		fn get_units_per_second(asset_type: T::ForeignAssetType) -> Option<u128> {
 			AssetTypeUnitsPerSecond::<T>::get(asset_type)
 		}
+		#[cfg(feature = "runtime-benchmarks")]
+		fn set_units_per_second(asset_type: T::ForeignAssetType, fee_per_second: u128) {
+			// Grab supported assets
+			let mut supported_assets = SupportedFeePaymentAssets::<T>::get();
+			// Only if the asset is not supported we need to push it
+			if let Err(index) = supported_assets.binary_search(&asset_type) {
+				supported_assets.insert(index, asset_type.clone());
+				SupportedFeePaymentAssets::<T>::put(supported_assets);
+			}
+			AssetTypeUnitsPerSecond::<T>::insert(&asset_type, &fee_per_second);
+		}
 	}
 
 	#[pallet::config]
 	pub trait Config: frame_system::Config {
-		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
+		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
 		/// The Asset Id. This will be used to create the asset and to associate it with
 		/// a assetType
@@ -190,16 +192,13 @@ pub mod pallet {
 		type AssetRegistrar: AssetRegistrar<Self>;
 
 		/// Origin that is allowed to create and modify asset information for foreign assets
-		type ForeignAssetModifierOrigin: EnsureOrigin<Self::Origin>;
+		type ForeignAssetModifierOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
 		/// Origin that is allowed to create and modify asset information for local assets
-		type LocalAssetModifierOrigin: EnsureOrigin<Self::Origin>;
+		type LocalAssetModifierOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
 		/// Ways of creating local asset Ids
 		type LocalAssetIdCreator: LocalAssetIdCreator<Self>;
-
-		/// The asset destroy Witness
-		type AssetDestroyWitness: Member + Parameter + Copy;
 
 		/// The currency mechanism in which we reserve deposits for local assets.
 		type Currency: ReservableCurrency<Self::AccountId>;
@@ -317,6 +316,7 @@ pub mod pallet {
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		/// Register new asset with the asset manager
+		#[pallet::call_index(0)]
 		#[pallet::weight(T::WeightInfo::register_foreign_asset())]
 		pub fn register_foreign_asset(
 			origin: OriginFor<T>,
@@ -357,6 +357,7 @@ pub mod pallet {
 
 		/// Change the amount of units we are charging per execution second
 		/// for a given ForeignAssetType
+		#[pallet::call_index(1)]
 		#[pallet::weight(T::WeightInfo::set_asset_units_per_second(*num_assets_weight_hint))]
 		pub fn set_asset_units_per_second(
 			origin: OriginFor<T>,
@@ -398,6 +399,7 @@ pub mod pallet {
 		/// Change the xcm type mapping for a given assetId
 		/// We also change this if the previous units per second where pointing at the old
 		/// assetType
+		#[pallet::call_index(2)]
 		#[pallet::weight(T::WeightInfo::change_existing_asset_type(*num_assets_weight_hint))]
 		pub fn change_existing_asset_type(
 			origin: OriginFor<T>,
@@ -452,6 +454,7 @@ pub mod pallet {
 			Ok(())
 		}
 
+		#[pallet::call_index(3)]
 		#[pallet::weight(T::WeightInfo::remove_supported_asset(*num_assets_weight_hint))]
 		pub fn remove_supported_asset(
 			origin: OriginFor<T>,
@@ -484,6 +487,7 @@ pub mod pallet {
 		}
 
 		/// Remove a given assetId -> assetType association
+		#[pallet::call_index(4)]
 		#[pallet::weight(T::WeightInfo::remove_existing_asset_type(*num_assets_weight_hint))]
 		pub fn remove_existing_asset_type(
 			origin: OriginFor<T>,
@@ -529,6 +533,7 @@ pub mod pallet {
 		/// The reason is that we dont need to hold a mapping between the multilocation
 		/// and the local asset, as this conversion is deterministic
 		/// Further, we dont allow xcm fee payment in local assets
+		#[pallet::call_index(5)]
 		#[pallet::weight(T::WeightInfo::register_local_asset())]
 		pub fn register_local_asset(
 			origin: OriginFor<T>,
@@ -596,9 +601,10 @@ pub mod pallet {
 		/// The weight in this case is the one returned by the trait
 		/// plus the db writes and reads from removing all the associated
 		/// data
+		#[pallet::call_index(6)]
 		#[pallet::weight({
 			let dispatch_info_weight = T::AssetRegistrar::destroy_asset_dispatch_info_weight(
-				*asset_id, *destroy_asset_witness
+				*asset_id
 			);
 			T::WeightInfo::remove_existing_asset_type(*num_assets_weight_hint)
 			.saturating_add(dispatch_info_weight)
@@ -606,12 +612,11 @@ pub mod pallet {
 		pub fn destroy_foreign_asset(
 			origin: OriginFor<T>,
 			asset_id: T::AssetId,
-			destroy_asset_witness: T::AssetDestroyWitness,
 			num_assets_weight_hint: u32,
 		) -> DispatchResult {
 			T::ForeignAssetModifierOrigin::ensure_origin(origin)?;
 
-			T::AssetRegistrar::destroy_foreign_asset(asset_id, destroy_asset_witness)
+			T::AssetRegistrar::destroy_foreign_asset(asset_id)
 				.map_err(|_| Error::<T>::ErrorDestroyingAsset)?;
 
 			// Grab supported assets
@@ -650,17 +655,14 @@ pub mod pallet {
 		/// We do not store anything related to local assets in this pallet other than the counter
 		/// and the counter is not used for destroying the asset, so no additional db reads/writes
 		/// to be counter here
+		#[pallet::call_index(7)]
 		#[pallet::weight({
 			T::AssetRegistrar::destroy_asset_dispatch_info_weight(
-				*asset_id, *destroy_asset_witness
+				*asset_id
 			)
 			.saturating_add(T::DbWeight::get().reads_writes(2, 2))
 		})]
-		pub fn destroy_local_asset(
-			origin: OriginFor<T>,
-			asset_id: T::AssetId,
-			destroy_asset_witness: T::AssetDestroyWitness,
-		) -> DispatchResult {
+		pub fn destroy_local_asset(origin: OriginFor<T>, asset_id: T::AssetId) -> DispatchResult {
 			T::LocalAssetModifierOrigin::ensure_origin(origin)?;
 
 			// Get asset creator and deposit amount
@@ -668,7 +670,7 @@ pub mod pallet {
 				LocalAssetDeposit::<T>::get(asset_id).ok_or(Error::<T>::NonExistentLocalAsset)?;
 
 			// Destroy local asset
-			T::AssetRegistrar::destroy_local_asset(asset_id, destroy_asset_witness)
+			T::AssetRegistrar::destroy_local_asset(asset_id)
 				.map_err(|_| Error::<T>::ErrorDestroyingAsset)?;
 
 			// Unreserve deposit
