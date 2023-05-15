@@ -1712,6 +1712,19 @@
 <a href="#1712" id="1712">1712</a>
 <a href="#1713" id="1713">1713</a>
 <a href="#1714" id="1714">1714</a>
+<a href="#1715" id="1715">1715</a>
+<a href="#1716" id="1716">1716</a>
+<a href="#1717" id="1717">1717</a>
+<a href="#1718" id="1718">1718</a>
+<a href="#1719" id="1719">1719</a>
+<a href="#1720" id="1720">1720</a>
+<a href="#1721" id="1721">1721</a>
+<a href="#1722" id="1722">1722</a>
+<a href="#1723" id="1723">1723</a>
+<a href="#1724" id="1724">1724</a>
+<a href="#1725" id="1725">1725</a>
+<a href="#1726" id="1726">1726</a>
+<a href="#1727" id="1727">1727</a>
 </pre><pre class="rust"><code><span class="comment">// Copyright 2019-2022 PureStake Inc.
 // This file is part of Moonbeam.
 
@@ -1987,7 +2000,7 @@
 	<span class="doccomment">/// A timestamp: milliseconds since the unix epoch.
 	</span><span class="kw">type </span>Moment = u64;
 	<span class="kw">type </span>OnTimestampSet = ();
-	<span class="kw">type </span>MinimumPeriod = ConstU64&lt;<span class="number">1</span>&gt;;
+	<span class="kw">type </span>MinimumPeriod = ConstU64&lt;<span class="number">6000</span>&gt;;
 	<span class="kw">type </span>WeightInfo = pallet_timestamp::weights::SubstrateWeight&lt;Runtime&gt;;
 }
 
@@ -2479,8 +2492,6 @@
 	</span><span class="kw">type </span>MaxBottomDelegationsPerCandidate = ConstU32&lt;<span class="number">50</span>&gt;;
 	<span class="doccomment">/// Maximum delegations per delegator
 	</span><span class="kw">type </span>MaxDelegationsPerDelegator = ConstU32&lt;<span class="number">100</span>&gt;;
-	<span class="doccomment">/// Minimum stake required to become a collator
-	</span><span class="kw">type </span>MinCollatorStk = ConstU128&lt;{ <span class="number">20_000 </span>* currency::GLMR * currency::SUPPLY_FACTOR }&gt;;
 	<span class="doccomment">/// Minimum stake required to be reserved to be a candidate
 	</span><span class="kw">type </span>MinCandidateStk = ConstU128&lt;{ <span class="number">20_000 </span>* currency::GLMR * currency::SUPPLY_FACTOR }&gt;;
 	<span class="doccomment">/// Minimum stake required to be reserved to be a delegator
@@ -3032,6 +3043,24 @@
 
 <span class="kw">impl </span>pallet_root_testing::Config <span class="kw">for </span>Runtime {}
 
+<span class="macro">parameter_types! </span>{
+	<span class="comment">// One storage item; key size is 32 + 20; value is size 4+4+16+20 bytes = 44 bytes.
+	</span><span class="kw">pub const </span>DepositBase: Balance = currency::deposit(<span class="number">1</span>, <span class="number">96</span>);
+	<span class="comment">// Additional storage item size of 20 bytes.
+	</span><span class="kw">pub const </span>DepositFactor: Balance = currency::deposit(<span class="number">0</span>, <span class="number">20</span>);
+	<span class="kw">pub const </span>MaxSignatories: u32 = <span class="number">100</span>;
+}
+
+<span class="kw">impl </span>pallet_multisig::Config <span class="kw">for </span>Runtime {
+	<span class="kw">type </span>RuntimeEvent = RuntimeEvent;
+	<span class="kw">type </span>RuntimeCall = RuntimeCall;
+	<span class="kw">type </span>Currency = Balances;
+	<span class="kw">type </span>DepositBase = DepositBase;
+	<span class="kw">type </span>DepositFactor = DepositFactor;
+	<span class="kw">type </span>MaxSignatories = MaxSignatories;
+	<span class="kw">type </span>WeightInfo = pallet_multisig::weights::SubstrateWeight&lt;Runtime&gt;;
+}
+
 <span class="macro">construct_runtime! </span>{
 	<span class="kw">pub enum </span>Runtime <span class="kw">where
 		</span>Block = Block,
@@ -3064,6 +3093,7 @@
 		Identity: pallet_identity::{Pallet, Call, Storage, Event&lt;T&gt;} = <span class="number">33</span>,
 		Migrations: pallet_migrations::{Pallet, Call, Storage, Config, Event&lt;T&gt;} = <span class="number">34</span>,
 		ProxyGenesisCompanion: pallet_proxy_genesis_companion::{Pallet, Config&lt;T&gt;} = <span class="number">35</span>,
+		Multisig: pallet_multisig::{Pallet, Call, Storage, Event&lt;T&gt;} = <span class="number">36</span>,
 
 		<span class="comment">// Has been permanently removed for safety reasons.
 		// Sudo: pallet_sudo::{Pallet, Call, Config&lt;T&gt;, Storage, Event&lt;T&gt;} = 40,
@@ -3351,10 +3381,6 @@
 
 		<span class="comment">// staking minimums
 		</span><span class="macro">assert_eq!</span>(
-			<span class="macro">get!</span>(pallet_parachain_staking, MinCollatorStk, u128),
-			Balance::from(<span class="number">2_000_000 </span>* GLMR)
-		);
-		<span class="macro">assert_eq!</span>(
 			<span class="macro">get!</span>(pallet_parachain_staking, MinCandidateStk, u128),
 			Balance::from(<span class="number">2_000_000 </span>* GLMR)
 		);
