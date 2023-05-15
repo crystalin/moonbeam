@@ -12,7 +12,7 @@ describeDevMoonbeam(
   (context) => {
     it("should have low balance transfer fees", async () => {
       const fee = await testBalanceTransfer(context);
-      expect(fee).to.equal(81940601520875n);
+      expect(fee).to.equal(77858601520875n);
     });
   },
   "Legacy",
@@ -36,7 +36,7 @@ describeDevMoonbeam(
   (context) => {
     it("should have low balance transfer fees", async () => {
       const fee = await testBalanceTransfer(context);
-      expect(fee).to.equal(99272001520875n);
+      expect(fee).to.equal(94169501520875n);
     });
   },
   "Legacy",
@@ -60,7 +60,7 @@ describeDevMoonbeam(
   (context) => {
     it("should have low balance transfer fees", async () => {
       const fee = await testBalanceTransfer(context);
-      expect(fee).to.equal(8194060152087500n);
+      expect(fee).to.equal(7785860152087500n);
     });
   },
   "Legacy",
@@ -171,7 +171,8 @@ describeDevMoonbeam("Substrate Length Fees - Ethereum txn Interaction", (context
     //
     // conclusion: the LengthToFee modifier is NOT involved
 
-    const expected = 33908;
+    // was 33908 before Wei added the extra gas modexp cost to solve slow computation
+    const expected = 37708;
     expect(receipt.gasUsed).to.equal(expected);
 
     // furthermore, we can account for the entire fee:
