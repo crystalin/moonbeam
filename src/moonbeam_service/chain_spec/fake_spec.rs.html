@@ -96,6 +96,8 @@
 <a href="#96" id="96">96</a>
 <a href="#97" id="97">97</a>
 <a href="#98" id="98">98</a>
+<a href="#99" id="99">99</a>
+<a href="#100" id="100">100</a>
 </pre><pre class="rust"><code><span class="comment">// Copyright 2019-2022 PureStake Inc.
 // This file is part of Moonbeam.
 
@@ -111,6 +113,8 @@
 
 // You should have received a copy of the GNU General Public License
 // along with Moonbeam.  If not, see &lt;http://www.gnu.org/licenses/&gt;.
+
+</span><span class="attr">#![allow(clippy::todo)]
 
 </span><span class="doccomment">/// Fake specifications, only a workaround to compile with runtime optional features.
 /// It&#39;s a zero variant enum to ensure at compile time that we never instantiate this type.
@@ -142,7 +146,7 @@
 		<span class="macro">todo!</span>()
 	}
 
-	<span class="kw">fn </span>boot_nodes(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>[sc_network_common::config::MultiaddrWithPeerId] {
+	<span class="kw">fn </span>boot_nodes(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>[sc_network::config::MultiaddrWithPeerId] {
 		<span class="macro">todo!</span>()
 	}
 
@@ -170,7 +174,7 @@
 		<span class="macro">todo!</span>()
 	}
 
-	<span class="kw">fn </span>add_boot_node(<span class="kw-2">&amp;mut </span><span class="self">self</span>, _addr: sc_network_common::config::MultiaddrWithPeerId) {
+	<span class="kw">fn </span>add_boot_node(<span class="kw-2">&amp;mut </span><span class="self">self</span>, _addr: sc_network::config::MultiaddrWithPeerId) {
 		<span class="macro">todo!</span>()
 	}
 
