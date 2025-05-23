@@ -49,7 +49,53 @@ use sp_runtime::{
 	},
 	StateVersion,
 };
-use std::io::Write;
+use std::{collections::HashSet, io::Write};
+use tracing::{dispatcher, Metadata};
+use tracing_subscriber::registry::{LookupSpan, Registry}; // Removed Layer import
+
+// Helper function to collect unique tracing log targets from currently known spans.
+// Note: This function relies on iterating over spans known to the active `tracing_subscriber::Registry`.
+// It will find targets associated with spans that are currently active or have been cached by the registry.
+// It may not return *all* statically defined tracing targets in the codebase if those targets
+// have not been part of any recorded spans yet.
+pub fn get_tracing_targets() -> Vec<String> {
+	let mut targets = HashSet::new();
+
+	dispatcher::get_default(|current_dispatcher| {
+		// Attempt to downcast the current dispatcher to a `Registry`.
+		// This is the most common type of dispatcher when using `tracing-subscriber`.
+		if let Some(registry) = current_dispatcher.downcast_ref::<Registry>() {
+			// Iterate over all spans known to the registry.
+			// The `registry.get(span.id())` lookup provides access to the span's `Metadata`,
+			// which includes the target.
+			registry.spans().for_each(|span_ref| {
+				// `span_ref` is a `SpanRef`. To get its metadata, we use `registry.get()`.
+				// This requires the `LookupSpan` trait to be in scope for `Registry`.
+				if let Some(attrs) = registry.get(span_ref.id()) {
+					targets.insert(attrs.metadata().target().to_string());
+				} else {
+					// This case should ideally not happen if a SpanRef is valid.
+					log::debug!("Could not retrieve metadata for a known span ID.");
+				}
+			});
+
+			// Additionally, events that are not part of a span might be registered.
+			// However, the `Registry` API does not offer a direct way to iterate
+			// all registered callsites' metadata for events outside of spans post-initialization.
+			// The collection will primarily consist of targets from spans.
+			if targets.is_empty() {
+				log::info!("No tracing targets found from active/cached spans in the registry.");
+			}
+		} else {
+			log::warn!(
+				"Current tracing dispatcher is not a Registry or could not be downcast. \
+				Unable to collect tracing targets."
+			);
+		}
+	});
+
+	targets.into_iter().collect()
+}
 
 fn load_spec(
 	id: &str,

@@ -419,6 +419,50 @@ pub struct Cli {
 	pub relaychain_args: Vec<String>,
 }
 
+impl clap::CommandFactory for Cli {
+	fn command() -> clap::Command {
+		let mut cmd = Self::augment_args(Self::command_for_update());
+		let original_targets = crate::command::get_tracing_targets();
+
+		let mut targets_help = String::from(
+			"\n\nAvailable log targets (dynamically discovered, may not be exhaustive, \
+			 RUST_LOG offers more control):\n",
+		);
+		if original_targets.is_empty() {
+			targets_help.push_str("- (No targets discovered. Try running the node first for dynamic discovery or use RUST_LOG)\n");
+		} else {
+			for target in original_targets {
+				targets_help.push_str(&format!("- {}\n", target));
+			}
+		}
+		targets_help.push_str(
+			"For full control, use the `RUST_LOG` environment variable with desired directives \
+			(e.g., `target_a=debug,target_b=trace`).",
+		);
+
+		// The `--log` option is defined in `sc_cli::LoggingParams` within `SharedParams`.
+		// We need to find it. Since `Cli` flattens `RunCmd`, which flattens `SharedParams`,
+		// the argument should be directly available in the command.
+		if let Some(arg) = cmd
+			.get_arguments_mut()
+			.find(|a| a.get_long() == Some("log"))
+		{
+			// Preserve existing help if possible, and append the new information.
+			// `get_help()` returns an `Option<Cow<'_, str>>`.
+			// `long_help` is likely what `sc_cli` uses.
+			let mut new_long_help = arg
+				.get_long_help()
+				.map(|s| s.to_string())
+				.unwrap_or_else(|| arg.get_help().map(|s| s.to_string()).unwrap_or_default());
+
+			new_long_help.push_str(&targets_help);
+			*arg = arg.clone().long_help(new_long_help);
+		}
+
+		cmd
+	}
+}
+
 #[derive(Debug)]
 pub struct RelayChainCli {
 	/// The actual relay chain cli object.
